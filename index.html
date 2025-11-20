@@ -71,6 +71,10 @@
                     <div class="btn-icon game-icon icon-spear"></div>
                     <div class="btn-info"><b>长矛</b><span>木材x1, 金块x1 | 耐久: <span id="tool-spear-durability">0</span></span></div>
                 </button>
+                <button class="craft-btn" id="craft-bow" onclick="game.craft('bow')">
+                    <div class="btn-icon">🏹</div>
+                    <div class="btn-info"><b>弓箭</b><span>木材x2, 蜘蛛丝x3 | 耐久: <span id="tool-bow-durability">0</span></span></div>
+                </button>
                 <button class="craft-btn" id="craft-tower" onclick="game.craft('tower')">
                     <div class="btn-icon game-icon icon-tower"></div>
                     <div class="btn-info"><b>防御塔</b><span>木材x8, 石头x6, 金块x2</span></div>
@@ -126,6 +130,11 @@
                             <div class="item-name">金块</div>
                             <div class="item-count" id="inv-gold">0</div>
                         </div>
+                        <div class="inventory-item">
+                            <div style="font-size: 32px;">🕸️</div>
+                            <div class="item-name">蜘蛛丝</div>
+                            <div class="item-count" id="inv-spiderSilk">0</div>
+                        </div>
                     </div>
                 </div>
 
@@ -149,6 +158,12 @@
                             <div class="item-name">大肉</div>
                             <div class="item-count" id="inv-bigmeat">0</div>
                             <div class="food-effect">+50🍗 +50❤️ +50🧠</div>
+                        </button>
+                        <button class="food-item-btn" id="eat-rottenmeat" onclick="game.eat('rottenmeat')">
+                            <div class="game-icon icon-rottenmeat"></div>
+                            <div class="item-name">腐肉</div>
+                            <div class="item-count" id="inv-rottenmeat">0</div>
+                            <div class="food-effect" style="color:#8b0000">+10🍗 -5❤️ -15🧠</div>
                         </button>
                     </div>
                 </div>
@@ -183,12 +198,22 @@
             
             <div id="message-log"></div>
             <div id="controls-panel">
-                <div style="margin-bottom:5px;">WASD 移动 | E 背包 | H 制作 | T 成就 | 鼠标点击交互</div>
+                <div style="margin-bottom:5px;">WASD 移动 | E 背包 | H 制作 | T 成就 | 左键点击交互 | 右键射击（弓箭）</div>
                 <button onclick="game.saveGame()">保存</button>
                 <button onclick="game.clearSave()" style="color:#8b0000">重置</button>
+                <button onclick="game.toggleMusic()" id="music-toggle">🔊 音乐</button>
             </div>
         </div>
     </div>
+    
+    <!-- 游戏背景音乐 -->
+    <audio id="bgm" loop>
+        <!-- 你可以在这里添加音乐文件，例如： -->
+        <!-- <source src="music/bgm.mp3" type="audio/mpeg"> -->
+        <!-- <source src="music/bgm.ogg" type="audio/ogg"> -->
+        <!-- 如果没有音乐文件，浏览器会静默处理 -->
+    </audio>
+    
     <script src="game.js"></script>
 </body>
 </html>

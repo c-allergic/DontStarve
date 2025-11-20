@@ -34,6 +34,8 @@ class Game {
         this.ui = { craftOpen: false, inventoryOpen: false, achievementsOpen: false };
         this.pendingAchievements = null; // 待显示的成就列表
         this.weatherParticles = [];
+        this.bloodParticles = []; // 新增：血滴粒子系统
+        this.windParticles = []; // 新增：突进风粒子系统
         
         // 图片资源
         this.images = {};
@@ -44,18 +46,28 @@ class Game {
             player: {
                 x: 0, y: 0, // 从原点开始，无限世界
                 health: 100, hunger: 100, sanity: 100,
-                // 新增 gold, pinecone
-                inventory: { twig:0, flint:0, wood:0, stone:0, grass:0, berry:0, meat:0, bigmeat:0, gold:0, pinecone:0 },
+                // 新增 gold, pinecone, spiderSilk
+                inventory: { twig:0, flint:0, wood:0, stone:0, grass:0, berry:0, meat:0, bigmeat:0, gold:0, pinecone:0, rottenmeat:0, spiderSilk:0 },
                 tools: { 
                     axe: false, 
                     pickaxe: false, 
                     spear: false,
+                    bow: false,  // 新增：弓箭
                     axeDurability: 0,  // 工具耐久度
                     pickaxeDurability: 0,
-                    spearDurability: 0
+                    spearDurability: 0,
+                    bowDurability: 0  // 弓箭耐久度
                 },
                 dir: 1,
-                isPaused: false  // 游戏暂停状态
+                isPaused: false,  // 游戏暂停状态
+                dashCooldown: 0,  // 突进冷却时间（帧数）
+                isDashing: false,  // 是否正在突进
+                dashProgress: 0,  // 突进进度（0-1）
+                dashStartX: 0,  // 突进起始X
+                dashStartY: 0,  // 突进起始Y
+                dashTargetX: 0,  // 突进目标X
+                dashTargetY: 0,  // 突进目标Y
+                dashDirection: { x: 0, y: 0 }  // 突进方向
             },
             entities: [],
             camera: { x: 0, y: 0 },
@@ -64,6 +76,8 @@ class Game {
             baseX: 0, baseY: 0, // 基地坐标（床的位置）
             hasBase: false, // 是否有基地
             chunks: {}, // 已生成的区块 { "chunkX,chunkY": true }
+            spiderPoisonTimer: 0, // 蜘蛛中毒debuff计时器（300帧=5秒）
+            lastKilledByBow: false, // 最后是否用弓箭击杀
             weather: {
                 type: 'clear', // clear, rain, fog, snow, thunderstorm
                 duration: 0,
@@ -80,6 +94,7 @@ class Game {
                 // 战斗成就
                 killedNightlings: 0,
                 killedBossWolves: 0,
+                killedWolves: 0,
                 // 建造成就
                 builtCampfires: 0,
                 builtTowers: 0,
@@ -93,8 +108,38 @@ class Game {
         this.loadGame();
         // 初始化成就系统
         this.checkAchievements();
+        // 初始化音乐系统
+        this.initMusic();
         this.loop = this.loop.bind(this);
         requestAnimationFrame(this.loop);
+    }
+    
+    // --- 新增：初始化音乐系统 ---
+    initMusic() {
+        this.bgm = document.getElementById('bgm');
+        if (this.bgm) {
+            // 设置音乐音量（0-1之间，0.3表示30%音量）
+            this.bgm.volume = 0.3;
+            // 尝试播放音乐（需要用户交互后才能自动播放）
+            this.bgm.play().catch(err => {
+                // 浏览器要求用户交互后才能播放，这里静默处理
+                console.log('音乐将在用户交互后播放');
+            });
+        }
+    }
+    
+    // --- 新增：播放/暂停音乐 ---
+    toggleMusic() {
+        if (this.bgm) {
+            const musicBtn = document.getElementById('music-toggle');
+            if (this.bgm.paused) {
+                this.bgm.play().catch(err => console.log('无法播放音乐'));
+                if (musicBtn) musicBtn.innerText = '🔊 音乐';
+            } else {
+                this.bgm.pause();
+                if (musicBtn) musicBtn.innerText = '🔇 音乐';
+            }
+        }
     }
     
     loadImages() {
@@ -109,7 +154,11 @@ class Game {
             'tower': 'cartoon/defensetower.png',
             'player': 'cartoon/girl.png',
             'boss_wolf': 'cartoon/wolfboss.png',
-            'beacon': 'cartoon/lighthouse.png'
+            'beacon': 'cartoon/lighthouse.png',
+            // --- 新增映射 ---
+            'wolf': 'cartoon/wolfboss.png', // 复用狼王图片
+            'rottenmeat': 'cartoon/meat.png', // 复用小肉图片
+            'spider': 'cartoon/spider.png' // 蜘蛛图片
         };
         
         let loaded = 0;
@@ -119,9 +168,7 @@ class Game {
             const img = new Image();
             img.onload = () => {
                 loaded++;
-                if (loaded === total) {
-                    console.log('所有图片加载完成');
-                }
+                if (loaded === total) console.log('所有图片加载完成');
             };
             img.onerror = () => {
                 console.warn(`图片加载失败: ${path}`);
@@ -159,7 +206,7 @@ class Game {
         });
         window.addEventListener('keyup', e => {
             this.keys[e.code] = false;
-            if (e.code === 'Space') this.interact();
+            // 删除空格互动功能，改为dash功能
         });
         window.addEventListener('resize', () => this.resize());
 
@@ -172,7 +219,13 @@ class Game {
 
         this.canvas.addEventListener('mousedown', e => {
             const rect = this.canvas.getBoundingClientRect();
-            this.handleClick(e.clientX - rect.left, e.clientY - rect.top);
+            const isRightClick = e.button === 2 || e.which === 3; // 右键点击
+            this.handleClick(e.clientX - rect.left, e.clientY - rect.top, isRightClick);
+        });
+        
+        // 阻止右键菜单
+        this.canvas.addEventListener('contextmenu', e => {
+            e.preventDefault();
         });
     }
 
@@ -184,7 +237,7 @@ class Game {
         this.canvas.style.cursor = hovered ? 'pointer' : 'crosshair';
     }
 
-    handleClick(mx, my) {
+    handleClick(mx, my, isRightClick = false) {
         // 如果点击在面板区域，不处理游戏交互，而是关闭面板
         const craftingPanel = document.getElementById('crafting-panel');
         const inventoryPanel = document.getElementById('inventory-panel');
@@ -223,6 +276,13 @@ class Game {
         const worldX = mx + cam.x;
         const worldY = my + cam.y;
         const p = this.state.player;
+        const tools = p.tools;
+
+        // --- 新增：右键点击使用弓箭射击 ---
+        if (isRightClick && tools.bow && tools.bowDurability > 0) {
+            this.shootBow(worldX, worldY);
+            return;
+        }
 
         let target = null;
         let minDist = 50;
@@ -237,6 +297,62 @@ class Game {
             } else {
                 this.log("距离太远");
             }
+        }
+    }
+    
+    // --- 新增：弓箭射击方法 ---
+    shootBow(targetX, targetY) {
+        const p = this.state.player;
+        const tools = p.tools;
+        
+        if (!tools.bow || tools.bowDurability <= 0) {
+            this.log("没有弓箭或弓箭已损坏！");
+            return;
+        }
+        
+        // 计算射击距离和角度
+        const distance = Math.hypot(targetX - p.x, targetY - p.y);
+        const maxRange = 600; // 最大射程600像素
+        
+        if (distance > maxRange) {
+            this.log(`射程太远！最大射程：${Math.floor(maxRange / 50)}格`);
+            return;
+        }
+        
+        // 计算射击角度
+        const angle = Math.atan2(targetY - p.y, targetX - p.x);
+        const projectileSpeed = 15; // 箭矢速度
+        
+        // 创建箭矢实体
+        const arrow = {
+            type: 'arrow',
+            x: p.x,
+            y: p.y,
+            vx: Math.cos(angle) * projectileSpeed,
+            vy: Math.sin(angle) * projectileSpeed,
+            ttl: 180, // 箭矢持续时间（3秒）
+            maxRange: maxRange, // 最大射程
+            startX: p.x, // 起始位置
+            startY: p.y,
+            damage: 25, // 弓箭伤害
+            id: Math.random().toString(36).slice(2),
+            life: 1,
+            maxLife: 1,
+            dir: Math.cos(angle) > 0 ? 1 : -1,
+            offset: 0,
+            attackTimer: 0,
+            growthTimer: 0,
+            shooter: 'player' // 标记这是玩家射出的箭
+        };
+        
+        this.state.entities.push(arrow);
+        
+        // 消耗弓箭耐久度（每次射击消耗1点，80点耐久度可以发射80次）
+        tools.bowDurability--;
+        if (tools.bowDurability <= 0) {
+            tools.bow = false;
+            tools.bowDurability = 0; // 确保不会变成负数
+            this.log("弓箭损坏了！", true);
         }
     }
 
@@ -336,17 +452,30 @@ class Game {
             grass: 6,
             flint: 3,
             stick: 5,
-            rabbit: 1
+            rabbit: 1,
+            spider: 0.8, // 新增：每个区块0.8只蜘蛛（平均每个区块不到1只）
+            wolf: 0.5 // 每个区块0.5只狼（平均每两个区块一只）
         };
         
         // 在区块内生成资源
         for (let type in resourcesPerChunk) {
             const count = resourcesPerChunk[type];
-            for (let i = 0; i < count; i++) {
-                // 在区块范围内随机生成
-                const offsetX = (Math.random() - 0.5) * CHUNK_SIZE * TILE_SIZE * 0.8;
-                const offsetY = (Math.random() - 0.5) * CHUNK_SIZE * TILE_SIZE * 0.8;
-                this.spawnEntity(type, centerX + offsetX, centerY + offsetY);
+            // 对于小数（如0.5, 0.8），使用概率生成
+            if (count < 1) {
+                if (Math.random() < count) {
+                    // 按概率生成（蜘蛛、狼等）
+                    const offsetX = (Math.random() - 0.5) * CHUNK_SIZE * TILE_SIZE * 0.8;
+                    const offsetY = (Math.random() - 0.5) * CHUNK_SIZE * TILE_SIZE * 0.8;
+                    this.spawnEntity(type, centerX + offsetX, centerY + offsetY);
+                }
+            } else {
+                // 整数数量，直接生成
+                for (let i = 0; i < count; i++) {
+                    // 在区块范围内随机生成
+                    const offsetX = (Math.random() - 0.5) * CHUNK_SIZE * TILE_SIZE * 0.8;
+                    const offsetY = (Math.random() - 0.5) * CHUNK_SIZE * TILE_SIZE * 0.8;
+                    this.spawnEntity(type, centerX + offsetX, centerY + offsetY);
+                }
             }
         }
     }
@@ -434,7 +563,7 @@ class Game {
                     attempts++;
                 } while (this.isGridAreaOccupied(gx, gy, size.width, size.height) && attempts < maxAttempts);
                 
-                if (attempts >= maxAttempts) return; // 找不到空位，放弃生成
+                if (attempts >= maxAttempts) return false; // 找不到空位，放弃生成，返回false
                 
                 // 使用左上角格子计算世界坐标
                 const pos = this.gridToWorld(gx, gy);
@@ -461,7 +590,7 @@ class Game {
                 // 检查整个区域是否被占用
                 if (this.isGridAreaOccupied(grid.gx, grid.gy, size.width, size.height)) {
                     this.log("此处已有建筑！");
-                    return;
+                    return false; // 返回false表示生成失败
                 }
                 // 使用左上角格子
                 const pos = this.gridToWorld(grid.gx, grid.gy);
@@ -479,9 +608,11 @@ class Game {
         }
         
         let hp = 100;
-        if(type === 'boss_wolf') hp = 1000;  // 狼王血量上调 
+        if(type === 'boss_wolf') hp = 1000;
+        if(type === 'wolf') hp = 150; // 新增：普通狼血量
         if(type === 'nightling') hp = 60;
         if(type === 'tower') hp = 350;
+        if(type === 'spider') hp = 20; // 蜘蛛血量：两击死亡（工具10伤害×2，弓箭25伤害只需1击，长矛30伤害只需1击）
 
         this.state.entities.push({
             type: type, x: x, y: y, 
@@ -490,11 +621,14 @@ class Game {
             offset: Math.random() * Math.PI * 2,
             dir: 1, attackTimer: 0,
             growthTimer: 0,
+            isHostile: false, // 新增：用于标记中立生物是否被激怒
             range: type==='tower'?320:undefined,
             atk: type==='tower'?35:undefined,
             cooldown: 0,
             vx: 0, vy: 0, damage: 0, ttl: 0
         });
+        
+        return true; // 成功生成，返回true
     }
 
     loop() {
@@ -504,8 +638,8 @@ class Game {
     }
 
     update() {
-        // 如果游戏暂停（成就弹窗或面板打开），不更新游戏逻辑和时间
-        if (this.state.player.isPaused || this.ui.craftOpen || this.ui.inventoryOpen || this.ui.achievementsOpen) return;
+        // 如果游戏完全暂停（成就弹窗），不更新任何内容
+        if (this.state.player.isPaused) return;
         
         const p = this.state.player;
         let speed = 5;
@@ -521,8 +655,87 @@ class Game {
         } else if (weather === 'thunderstorm') {
             speed *= (0.70 - weatherIntensity * 0.1); // 雷暴大幅减速：70%-60%
         }
+        
+        // --- 理智值低于40时，移动速度降低 ---
+        if (p.sanity < 40) {
+            const sanityPenalty = (40 - p.sanity) / 40; // 0-1之间的惩罚系数
+            speed *= (1 - sanityPenalty * 0.4); // 最多降低40%移动速度
+        }
 
         // 移除边界限制，实现无限世界
+        // 允许在打开面板时移动（只暂停游戏逻辑，不停移动）
+        
+        // 更新突进冷却时间
+        if (p.dashCooldown > 0) {
+            p.dashCooldown--;
+        }
+        
+        // 处理突进功能（空格键）
+        if (this.keys['Space'] && p.dashCooldown <= 0 && !p.isDashing) {
+            // 计算突进方向（基于最后移动方向或玩家朝向）
+            let dashX = 0, dashY = 0;
+            if (this.keys['KeyW'] || this.keys['ArrowUp']) dashY = -1;
+            if (this.keys['KeyS'] || this.keys['ArrowDown']) dashY = 1;
+            if (this.keys['KeyA'] || this.keys['ArrowLeft']) dashX = -1;
+            if (this.keys['KeyD'] || this.keys['ArrowRight']) dashX = 1;
+            
+            // 如果没有移动方向，使用玩家朝向
+            if (dashX === 0 && dashY === 0) {
+                dashX = p.dir;
+            }
+            
+            // 归一化方向向量
+            const length = Math.hypot(dashX, dashY);
+            if (length > 0) {
+                dashX /= length;
+                dashY /= length;
+            }
+            
+            // 设置突进动画参数
+            const dashDistance = 100;
+            p.isDashing = true;
+            p.dashProgress = 0;
+            p.dashStartX = p.x;
+            p.dashStartY = p.y;
+            p.dashTargetX = p.x + dashX * dashDistance;
+            p.dashTargetY = p.y + dashY * dashDistance;
+            p.dashDirection = { x: dashX, y: dashY };
+            
+            // 创建风粒子效果
+            this.createWindEffect(p.x, p.y, -dashX, -dashY);
+            
+            // 设置冷却时间（2秒 = 120帧，60fps）
+            p.dashCooldown = 120;
+            
+            // 防止连续触发
+            this.keys['Space'] = false;
+        }
+        
+        // 更新突进动画
+        if (p.isDashing) {
+            const dashDuration = 10; // 突进持续时间（10帧，约0.17秒）
+            p.dashProgress += 1 / dashDuration;
+            
+            if (p.dashProgress >= 1) {
+                // 突进完成
+                p.x = p.dashTargetX;
+                p.y = p.dashTargetY;
+                p.isDashing = false;
+                p.dashProgress = 0;
+                // 视觉反馈：相机震动
+                this.shakeCamera(3);
+                this.log("突进！", false);
+            } else {
+                // 使用缓动函数实现平滑动画（ease-out）
+                const easeOut = 1 - Math.pow(1 - p.dashProgress, 3);
+                p.x = p.dashStartX + (p.dashTargetX - p.dashStartX) * easeOut;
+                p.y = p.dashStartY + (p.dashTargetY - p.dashStartY) * easeOut;
+                
+                // 在突进过程中持续创建风粒子
+                this.createWindEffect(p.x, p.y, -p.dashDirection.x, -p.dashDirection.y);
+            }
+        }
+        
         if (this.keys['KeyW'] || this.keys['ArrowUp']) { p.y -= speed; moved = true; }
         if (this.keys['KeyS'] || this.keys['ArrowDown']) { p.y += speed; moved = true; }
         if (this.keys['KeyA'] || this.keys['ArrowLeft']) { p.x -= speed; p.dir = -1; moved = true; }
@@ -534,6 +747,7 @@ class Game {
         this.state.camera.x = p.x - this.width / 2;
         this.state.camera.y = p.y - this.height / 2;
 
+        // 游戏逻辑继续运行，即使面板打开（只有成就弹窗会完全暂停）
         this.state.time++;
         
         const cycle = this.getCycle();
@@ -566,6 +780,20 @@ class Game {
             this.state.day++;
             this.state.achievements.survivedDays++;
             this.state.achievements.maxDays = Math.max(this.state.achievements.maxDays, this.state.day);
+            
+            // --- 新增：三天内必须建造基地，否则迷失失败 ---
+            if (this.state.day >= 3 && !this.state.hasBase) {
+                const maxDays = this.state.achievements.maxDays;
+                alert(`你迷失了...\n在荒野中游荡了3天，却始终没有找到家的方向。\n存活天数: ${this.state.day} 天\n最长存活记录: ${maxDays} 天`);
+                this.clearSave();
+                return;
+            }
+            
+            // 第二天和第三天提示建造基地
+            if (this.state.day === 2 && !this.state.hasBase) {
+                this.log("警告：你还没有建立基地！第3天前必须建造床或灯塔，否则会迷失！", true);
+            }
+            
             this.checkAchievements();
             this.log(`第 ${this.state.day} 天`);
             this.respawnResources();
@@ -576,8 +804,27 @@ class Game {
 
         const hungerDrain = moved ? 0.015 : 0.005; 
         p.hunger = Math.max(0, p.hunger - hungerDrain);
+        
+        // --- 蜘蛛中毒debuff处理 ---
+        if (this.state.spiderPoisonTimer > 0) {
+            this.state.spiderPoisonTimer--;
+            // 每秒掉3点理智（每60帧掉3点，即每帧掉0.05）
+            p.sanity = Math.max(0, p.sanity - 0.05);
+            // 每20帧提示一次（约0.33秒）
+            if (this.state.spiderPoisonTimer % 20 === 0) {
+                const secondsLeft = Math.ceil(this.state.spiderPoisonTimer / 60);
+                if (secondsLeft > 0) {
+                    this.log(`中毒中...理智持续下降 (剩余${secondsLeft}秒)`, true);
+                }
+            }
+            // debuff结束后提示
+            if (this.state.spiderPoisonTimer === 0) {
+                this.log("毒素效果消失了");
+            }
+        }
 
         const nearFire = this.checkNearFire();
+        const nearBase = this.checkNearBase();
 
         // --- 修正后的查理逻辑 ---
         if (cycle === 'night' && !nearFire) {
@@ -593,16 +840,44 @@ class Game {
             if (this.state.darknessTimer > 90) {
                 p.health -= 10; // 巨额伤害
                 this.log("查理攻击了你！", true);
-                this.shakeCamera(20);
+                this.shakeCamera(30);
                 this.state.darknessTimer = 0; // 重置，如果不生火会继续挨打
             }
             
             // 黑暗中理智依然会掉
-            p.sanity = Math.max(0, p.sanity - 0.05);
+            p.sanity = Math.max(0, p.sanity - 0.1);
         } else {
             this.state.darknessTimer = 0; // 有光，重置计时器
-            if (cycle === 'dusk' && !nearFire) p.sanity = Math.max(0, p.sanity - 0.01);
-            else if(p.sanity < 100) p.sanity = Math.min(100, p.sanity + 0.08);
+            
+            const weather = this.state.weather.type;
+            
+            // --- 新增：远离基地的理智衰减（白天和黄昏）---
+            if (this.state.hasBase && !nearBase) {
+                if (cycle === 'dusk') {
+                    // 黄昏时远离基地，理智衰减（降低下降速度）
+                    p.sanity = Math.max(0, p.sanity - 0.03); // 从0.05降低到0.03
+                    if (this.state.time % 60 === 0) { // 每1秒提示一次
+                        this.log("远离基地让你感到不安...", true);
+                    }
+                } else if (cycle === 'day' && weather === 'clear') {
+                    // 晴天时远离基地，理智缓慢下降
+                    p.sanity = Math.max(0, p.sanity - 0.01);
+                    if (this.state.time % 120 === 0) { // 每2秒提示一次
+                        this.log("远离基地让你感到孤独...");
+                    }
+                }
+            }
+            
+            // --- 黄昏时既没有火也没有基地，理智缓慢下降（降低下降速度）---
+            if (cycle === 'dusk' && !nearFire && !nearBase) {
+                p.sanity = Math.max(0, p.sanity - 0.005); // 从0.01降低到0.005
+            }
+            
+            // --- 理智值恢复：只有在靠近火或基地时才恢复 ---
+            if (p.sanity < 100 && (nearFire || nearBase)) {
+                p.sanity = Math.min(100, p.sanity + 0.08);
+            }
+            // 远离火和基地时，理智值不会自动回复
         }
 
         if (p.hunger <= 0) p.health -= 0.03;
@@ -650,8 +925,8 @@ class Game {
                 const dist = Math.hypot(p.x - e.x, p.y - e.y);
                 if (dist < 150) {
                     const angle = Math.atan2(e.y - p.y, e.x - p.x);
-                    e.x += Math.cos(angle) * 3.5 * speedMultiplier; 
-                    e.y += Math.sin(angle) * 3.5 * speedMultiplier; 
+                    e.x += Math.cos(angle) * 3.8 * speedMultiplier; 
+                    e.y += Math.sin(angle) * 3.8 * speedMultiplier; 
                     e.dir = Math.cos(angle)>0?1:-1;
                 } else {
                     if(Math.random() < 0.02 * activityMultiplier) { 
@@ -667,6 +942,96 @@ class Game {
                     // 移除边界限制，允许在无限世界移动
                     // e.x = Math.max(0, Math.min(WORLD_SIZE*TILE_SIZE, e.x)); 
                     // e.y = Math.max(0, Math.min(WORLD_SIZE*TILE_SIZE, e.y));
+            }
+            else if (e.type === 'spider') {
+                // 蜘蛛AI：类似兔子，中立生物，但被攻击后会反击
+                const weather = this.state.weather.type;
+                let speedMultiplier = 1.0;
+                let activityMultiplier = 1.0;
+
+                if (weather === 'rain' || weather === 'snow' || weather === 'thunderstorm') {
+                    speedMultiplier = 0.4;
+                    activityMultiplier = 0.2;
+                } else if (weather === 'fog') {
+                    speedMultiplier = 0.6;
+                }
+
+                const dist = Math.hypot(p.x - e.x, p.y - e.y);
+                
+                // 如果玩家在附近且蜘蛛已受伤，反击玩家
+                if (dist < 80 && e.life < e.maxLife) {
+                    // 被攻击后反击
+                    e.attackTimer = (e.attackTimer || 0) + 1;
+                    if (e.attackTimer > 30) { // 每0.5秒攻击一次
+                        // 蜘蛛反击：造成中毒debuff
+                        this.state.spiderPoisonTimer = 300; // 5秒 = 300帧
+                        this.state.lastKilledByBow = false; // 标记不是弓箭击杀
+                        p.sanity = Math.max(0, p.sanity - 3); // 立即扣3点理智
+                        this.log("蜘蛛咬了你！你中毒了！", true);
+                        this.shakeCamera(3);
+                        e.attackTimer = 0;
+                    }
+                    // 追向玩家
+                    const angle = Math.atan2(p.y - e.y, p.x - e.x);
+                    e.x += Math.cos(angle) * 2.8 * speedMultiplier;
+                    e.y += Math.sin(angle) * 2.8 * speedMultiplier;
+                    e.dir = Math.cos(angle)>0?1:-1;
+                } else if (dist < 120) {
+                    // 正常时逃离玩家
+                    const angle = Math.atan2(e.y - p.y, e.x - p.x);
+                    e.x += Math.cos(angle) * 2.5 * speedMultiplier; 
+                    e.y += Math.sin(angle) * 2.5 * speedMultiplier; 
+                    e.dir = Math.cos(angle)>0?1:-1;
+                } else {
+                    // 游荡
+                    if(Math.random() < 0.015 * activityMultiplier) { 
+                        e.vx=(Math.random()-0.5) * 1.5 * speedMultiplier; 
+                        e.vy=(Math.random()-0.5) * 1.5 * speedMultiplier; 
+                        e.dir=e.vx>0?1:-1; 
+                    }
+                    if(e.vx) { 
+                        e.x+=e.vx; e.y+=e.vy; 
+                        if(Math.random() < 0.04) e.vx=0; 
+                    }
+                }
+            }
+            else if (e.type === 'wolf') {
+                const dist = Math.hypot(p.x - e.x, p.y - e.y);
+                
+                // AI逻辑：如果被激怒(isHostile)则追击，否则游荡
+                if (e.isHostile) {
+                    // 追击模式
+                    const angle = Math.atan2(p.y - e.y, p.x - e.x);
+                    e.vx = Math.cos(angle) * 3.8; // 速度稍快
+                    e.vy = Math.sin(angle) * 3.8;
+                    e.x += e.vx; e.y += e.vy; e.dir = Math.cos(angle)>0?1:-1;
+                    
+                    // 攻击玩家
+                    if (dist < 50) {
+                        e.attackTimer++;
+                        if (e.attackTimer > 40) { // 攻速
+                            p.health -= 15; // 伤害
+                            this.shakeCamera(5); 
+                            this.log("被狼咬伤！", true);
+                            e.attackTimer = 0; 
+                        }
+                    }
+                } else {
+                    // 中立游荡模式
+                    if(Math.random() < 0.01) { 
+                        e.vx=(Math.random()-0.5) * 1.5; 
+                        e.vy=(Math.random()-0.5) * 1.5; 
+                        e.dir=e.vx>0?1:-1; 
+                    }
+                    e.x += e.vx; e.y += e.vy;
+                    
+                    // 稍微避让玩家（保持距离）
+                    if (dist < 80) {
+                        const angle = Math.atan2(e.y - p.y, e.x - p.x);
+                        e.x += Math.cos(angle) * 1;
+                        e.y += Math.sin(angle) * 1;
+                    }
+                }
             }
             else if (e.type === 'nightling') {
                 const dist = Math.hypot(p.x - e.x, p.y - e.y);
@@ -696,7 +1061,12 @@ class Game {
             }
             else if (e.type === 'tower') {
                 e.cooldown = Math.max(0, e.cooldown - 1);
-                const targets = this.state.entities.filter(t => (t.type==='nightling' || t.type==='boss_wolf'));
+                // 防御塔攻击所有敌对生物：夜怪、狼王、以及被激怒的狼
+                const targets = this.state.entities.filter(t => 
+                    t.type==='nightling' || 
+                    t.type==='boss_wolf' || 
+                    (t.type==='wolf' && t.isHostile)
+                );
                 let nearest = null, dmin = Infinity;
                 
                 // 动态计算射程，受天气影响
@@ -743,22 +1113,172 @@ class Game {
                 }
             }
             else if (e.type === 'arrow') {
-                e.ttl--; if (e.ttl <= 0) { this.state.entities.splice(idx,1); return; }
+                e.ttl--; 
+                // 检查是否超过最大射程
+                if (e.ttl <= 0 || (e.maxRange && e.startX !== undefined && e.startY !== undefined && Math.hypot(e.x - e.startX, e.y - e.startY) > e.maxRange)) { 
+                    this.state.entities.splice(idx,1); 
+                    return; 
+                }
                 e.x += e.vx; e.y += e.vy;
-                const hitIdx = this.state.entities.findIndex(t => (t.type==='nightling' || t.type==='boss_wolf') && Math.hypot(t.x - e.x, t.y - e.y) < 16);
+                // 检查是否击中任何可攻击的实体（包括蜘蛛、兔子、狼等）
+                const hitIdx = this.state.entities.findIndex(t => {
+                    if (t === e) return false; // 不击中自己
+                    const dist = Math.hypot(t.x - e.x, t.y - e.y);
+                    return dist < 16 && (
+                        t.type === 'nightling' || 
+                        t.type === 'boss_wolf' || 
+                        t.type === 'wolf' || // 修复：弓箭可以攻击所有狼，不管是否被激怒
+                        t.type === 'spider' ||
+                        t.type === 'rabbit'
+                    );
+                });
                 if (hitIdx >= 0) {
                     const t = this.state.entities[hitIdx];
+                    const p = this.state.player;
                     t.life -= e.damage;
+                    
+                    // 新增：创建血滴特效
+                    this.createBloodEffect(t.x, t.y);
+                    
                     if (t.life <= 0) {
-                        if (t.type === 'nightling') { this.state.entities.splice(hitIdx,1); this.state.player.inventory.meat++; }
-                        else if (t.type === 'boss_wolf') { this.state.entities.splice(hitIdx,1); this.state.player.inventory.bigmeat++; this.state.player.inventory.gold += 2; this.log("防御塔击杀狼王！", false); }
+                        // 根据武器类型决定理智值下降（弓箭降低理智值下降）
+                        const isPlayerArrow = e.shooter === 'player';
+                        let sanityLoss = 0;
+                        
+                        if (t.type === 'nightling') { 
+                            this.state.entities.splice(hitIdx,1); 
+                            this.state.player.inventory.rottenmeat = (this.state.player.inventory.rottenmeat || 0) + 1;
+                            this.state.achievements.killedNightlings++;
+                        } else if (t.type === 'boss_wolf') { 
+                            this.state.entities.splice(hitIdx,1); 
+                            this.state.player.inventory.bigmeat++; 
+                            this.state.player.inventory.gold += 2; 
+                            this.state.achievements.killedBossWolves++;
+                            if (isPlayerArrow) {
+                                sanityLoss = 10; // 弓箭击杀狼王理智下降较少
+                            }
+                            this.log(isPlayerArrow ? "弓箭击杀狼王！获得大肉&金块！" : "防御塔击杀狼王！", false); 
+                        } else if (t.type === 'wolf') {
+                            if (t.gx !== undefined) this.freeArea(t.gx, t.gy, t.w || 1, t.h || 1);
+                            this.state.entities.splice(hitIdx,1); 
+                            this.state.player.inventory.meat += 2;
+                            if (!this.state.achievements.killedWolves) this.state.achievements.killedWolves = 0;
+                            this.state.achievements.killedWolves++;
+                            this.state.achievements.totalMeat += 2;
+                            if (isPlayerArrow) {
+                                sanityLoss = 15; // 弓箭击杀狼理智下降较少
+                            }
+                            this.log(isPlayerArrow ? "弓箭击杀狼：获得小肉x2" : "防御塔击杀狼！获得小肉x2");
+                        } else if (t.type === 'spider') {
+                            this.state.entities.splice(hitIdx,1);
+                            this.state.player.inventory.spiderSilk = (this.state.player.inventory.spiderSilk || 0) + 2;
+                            sanityLoss = 3; // 弓箭击杀蜘蛛理智下降最少
+                            this.state.lastKilledByBow = true; // 标记是弓箭击杀
+                            
+                            // 如果弓箭击杀，且已有中毒debuff，减少中毒时间
+                            if (isPlayerArrow && this.state.spiderPoisonTimer > 0) {
+                                this.state.spiderPoisonTimer = Math.floor(this.state.spiderPoisonTimer / 2);
+                                this.log("弓箭击杀蜘蛛：获得蜘蛛丝x2 (远距离击杀让毒素减轻了)");
+                            } else {
+                                this.log("弓箭击杀蜘蛛：获得蜘蛛丝x2");
+                            }
+                        } else if (t.type === 'rabbit') {
+                            this.state.entities.splice(hitIdx,1);
+                            this.state.player.inventory.meat++;
+                            this.state.achievements.totalMeat++;
+                            sanityLoss = 5; // 弓箭击杀兔子理智下降较少
+                            this.log("弓箭击杀兔子：获得小肉x1");
+                        }
+                        
+                        if (isPlayerArrow && sanityLoss > 0) {
+                            p.sanity = Math.max(0, p.sanity - sanityLoss);
+                        }
+                        
+                        this.checkAchievements();
                     }
                     this.state.entities.splice(idx,1);
                 }
             }
         });
 
+        // 更新血滴粒子
+        this.updateBloodParticles();
+        
+        // 更新风粒子
+        this.updateWindParticles();
+
         this.updateUI();
+    }
+
+    // --- 新增：创建血滴特效 ---
+    createBloodEffect(x, y) {
+        // 创建5-8个血滴粒子
+        const count = 5 + Math.floor(Math.random() * 4);
+        for (let i = 0; i < count; i++) {
+            this.bloodParticles.push({
+                x: x + (Math.random() - 0.5) * 20,
+                y: y + (Math.random() - 0.5) * 20,
+                vx: (Math.random() - 0.5) * 3,
+                vy: (Math.random() - 0.5) * 3 - 1, // 向上飞溅
+                life: 30 + Math.floor(Math.random() * 20), // 30-50帧生命周期
+                maxLife: 30 + Math.floor(Math.random() * 20),
+                size: 3 + Math.random() * 3 // 3-6像素大小
+            });
+        }
+    }
+    
+    // --- 新增：更新血滴粒子 ---
+    updateBloodParticles() {
+        for (let i = this.bloodParticles.length - 1; i >= 0; i--) {
+            const p = this.bloodParticles[i];
+            p.x += p.vx;
+            p.y += p.vy;
+            p.vy += 0.2; // 重力效果
+            p.life--;
+            
+            if (p.life <= 0) {
+                this.bloodParticles.splice(i, 1);
+            }
+        }
+    }
+    
+    // --- 新增：创建风粒子效果 ---
+    createWindEffect(x, y, dirX, dirY) {
+        // 在玩家身后创建风粒子
+        const particleCount = 8;
+        for (let i = 0; i < particleCount; i++) {
+            const angle = Math.atan2(dirY, dirX) + (Math.random() - 0.5) * 0.8; // 稍微随机角度
+            const speed = 2 + Math.random() * 3;
+            const offsetX = (Math.random() - 0.5) * 30;
+            const offsetY = (Math.random() - 0.5) * 30;
+            
+            this.windParticles.push({
+                x: x + offsetX,
+                y: y + offsetY,
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed,
+                life: 15 + Math.floor(Math.random() * 10), // 15-25帧生命周期
+                maxLife: 15 + Math.floor(Math.random() * 10),
+                size: 2 + Math.random() * 3, // 2-5像素大小
+                alpha: 0.6 + Math.random() * 0.4 // 0.6-1.0透明度
+            });
+        }
+    }
+    
+    // --- 新增：更新风粒子 ---
+    updateWindParticles() {
+        for (let i = this.windParticles.length - 1; i >= 0; i--) {
+            const p = this.windParticles[i];
+            p.x += p.vx;
+            p.y += p.vy;
+            p.vx *= 0.95; // 逐渐减速
+            p.vy *= 0.95;
+            p.life--;
+            
+            if (p.life <= 0) {
+                this.windParticles.splice(i, 1);
+            }
+        }
     }
 
     respawnResources() {
@@ -799,7 +1319,7 @@ class Game {
         
         // 智能刷新：只在资源不足时刷新，并在玩家附近区域刷新
         const refreshRadius = 800; // 刷新半径（玩家附近）
-        const refreshTypes = ['tree', 'rock', 'bush', 'grass', 'flint', 'stick', 'rabbit'];
+        const refreshTypes = ['tree', 'rock', 'bush', 'grass', 'flint', 'stick', 'rabbit', 'wolf'];
         
         refreshTypes.forEach(type => {
             const current = counts[type];
@@ -829,27 +1349,37 @@ class Game {
         });
     }
 
-    interact() {
-        const p = this.state.player;
-        let target = null, minDist = 100;
-        this.state.entities.forEach((e, index) => {
-            const dist = Math.hypot(e.x - p.x, e.y - p.y);
-            if (dist < minDist) { target = { e, index }; minDist = dist; }
-        });
-        if (target) this.gather(target.e, target.index);
-    }
+    // interact() 方法已删除，改为dash功能
 
     gather(entity, index) {
         const p = this.state.player;
         const inv = p.inventory;
         const tools = p.tools;
 
-        // 伤害计算：长矛30，工具10，空手5
+        // 伤害计算：长矛30，弓箭25（远程），工具10，空手5
         let damage = 5;
         let toolUsed = null;
-        if (tools.spear && tools.spearDurability > 0) {
+        
+        // 如果是火堆、床、灯塔等可交互建筑，不需要武器，直接处理
+        if (entity.type === 'campfire' || entity.type === 'bed' || entity.type === 'beacon' || entity.type === 'tower') {
+            // 这些建筑不需要武器，直接处理
+        } else if (tools.spear && tools.spearDurability > 0) {
             damage = 30;
             toolUsed = 'spear';
+        } else if (tools.bow && tools.bowDurability > 0) {
+            // 弓箭不能近战攻击，需要通过射击
+            // 但只有在没有其他工具时才提示
+            if (!tools.spear && !tools.axe && !tools.pickaxe) {
+                return this.log("弓箭需要远程射击！右键点击目标");
+            }
+            // 如果有其他工具，使用其他工具
+            if (tools.axe && tools.axeDurability > 0) {
+                damage = 10;
+                toolUsed = 'axe';
+            } else if (tools.pickaxe && tools.pickaxeDurability > 0) {
+                damage = 10;
+                toolUsed = 'pickaxe';
+            }
         } else if (tools.axe && tools.axeDurability > 0) {
             damage = 10;
             toolUsed = 'axe';
@@ -863,9 +1393,17 @@ class Game {
             toolUsed = null;
             damage = 5;
         }
+        
+        // --- 理智值低于40时，攻击伤害降低 ---
+        if (p.sanity < 40) {
+            const sanityPenalty = (40 - p.sanity) / 40; // 0-1之间的惩罚系数
+            damage = Math.floor(damage * (1 - sanityPenalty * 0.3)); // 最多降低30%伤害
+        }
 
         if (entity.type === 'boss_wolf') {
             entity.life -= damage;
+            // 新增：创建血滴特效
+            this.createBloodEffect(entity.x, entity.y);
             const angle = Math.atan2(entity.y - p.y, entity.x - p.x);
             entity.x += Math.cos(angle) * 30; entity.y += Math.sin(angle) * 30;
             this.shakeCamera(5);
@@ -906,11 +1444,10 @@ class Game {
             entity.x += Math.cos(angle) * 20; entity.y += Math.sin(angle) * 20;
             if (entity.life <= 0) { 
                 this.state.entities.splice(index, 1); 
-                inv.meat++; 
+                inv.rottenmeat = (inv.rottenmeat || 0) + 1; // 改为掉落腐肉
                 this.state.achievements.killedNightlings++;
-                this.state.achievements.totalMeat++;
                 this.checkAchievements();
-                this.log("击杀夜怪：小肉"); 
+                this.log("击杀夜怪：获得腐肉 (有毒)"); 
                 
                 // 如果使用长矛，消耗耐久
                 if (toolUsed === 'spear') {
@@ -924,13 +1461,143 @@ class Game {
             return;
         }
         
+        // --- 新增：狼 (Wolf) 的战斗逻辑 ---
+        if (entity.type === 'wolf') {
+            entity.life -= damage;
+            // 新增：创建血滴特效
+            this.createBloodEffect(entity.x, entity.y);
+            entity.isHostile = true; // 重点：攻击后变敌对
+            
+            // 击退效果
+            const angle = Math.atan2(entity.y - p.y, entity.x - p.x);
+            entity.x += Math.cos(angle) * 15; entity.y += Math.sin(angle) * 15;
+            
+            if (entity.life <= 0) {
+                // 释放网格占用（如果有）
+                if (entity.gx !== undefined) this.freeArea(entity.gx, entity.gy, entity.w || 1, entity.h || 1);
+                
+                this.state.entities.splice(index, 1);
+                inv.meat += 2; // 掉落2块肉
+                
+                // 成就统计
+                this.state.achievements.totalMeat += 2;
+                if (!this.state.achievements.killedWolves) this.state.achievements.killedWolves = 0;
+                this.state.achievements.killedWolves++;
+                this.checkAchievements();
+                
+                // 惩罚：击杀中立生物扣理智 - 根据武器类型决定
+                let sanityLoss = 25; // 默认徒手或工具
+                if (toolUsed === 'spear') {
+                    sanityLoss = 20; // 长矛稍低
+                } else if (toolUsed === 'bow') {
+                    sanityLoss = 15; // 弓箭最低（距离远，看不清楚）
+                }
+                p.sanity = Math.max(0, p.sanity - sanityLoss); 
+                this.log(toolUsed === 'bow' ? "弓箭击杀狼：获得小肉x2 (理智 -15)" : "击杀狼：获得小肉x2 (理智 -" + sanityLoss + ")", true);
+                this.shakeCamera(5);
+                
+                // 工具耐久消耗逻辑
+                if (toolUsed === 'spear') {
+                    p.tools.spearDurability--;
+                    if (p.tools.spearDurability <= 0) {
+                        p.tools.spear = false;
+                        this.log("长矛损坏了！", true);
+                    }
+                }
+            } else {
+                this.log("你激怒了这只狼！", true);
+            }
+            return;
+        }
+
+        // --- 修改：夜怪 (Nightling) 掉落改为腐肉 ---
+        if (entity.type === 'nightling') {
+            entity.life -= damage;
+            // 新增：创建血滴特效
+            this.createBloodEffect(entity.x, entity.y);
+            const angle = Math.atan2(entity.y - p.y, entity.x - p.x);
+            entity.x += Math.cos(angle) * 20; entity.y += Math.sin(angle) * 20;
+            if (entity.life <= 0) { 
+                this.state.entities.splice(index, 1); 
+                inv.rottenmeat++; // 修改：掉落腐肉
+                this.state.achievements.killedNightlings++;
+                this.checkAchievements();
+                this.log("击杀夜怪：获得腐肉 (有毒)"); // 修改提示
+                
+                if (toolUsed === 'spear') {
+                    p.tools.spearDurability--;
+                    if (p.tools.spearDurability <= 0) {
+                        p.tools.spear = false;
+                        this.log("长矛损坏了！", true);
+                    }
+                }
+            }
+            return;
+        }
+        
+        // --- 修改：兔子 (Rabbit) 击杀扣理智 ---
         if (entity.type === 'rabbit') {
-            // 兔子血量低，直接死
             this.state.entities.splice(index, 1); 
             inv.meat++; 
+            
+            // 新增：杀害弱小生物扣理智 - 根据使用的武器决定扣理智值
+            let sanityLoss = 10; // 默认徒手或工具
+            if (toolUsed === 'spear') {
+                sanityLoss = 8; // 长矛稍低
+            } else if (toolUsed === 'bow') {
+                sanityLoss = 5; // 弓箭最低（距离远，看不清楚）
+            }
+            p.sanity = Math.max(0, p.sanity - sanityLoss); 
             this.state.achievements.totalMeat++;
             this.checkAchievements();
-            this.log("猎杀: 小肉");
+            this.log(toolUsed === 'bow' ? "射杀兔子 (理智 -5)" : "猎杀兔子 (理智 -" + sanityLoss + ")");
+            return;
+        }
+        
+        // --- 新增：蜘蛛 (Spider) 战斗逻辑 ---
+        if (entity.type === 'spider') {
+            entity.life -= damage;
+            // 新增：创建血滴特效
+            this.createBloodEffect(entity.x, entity.y);
+            const angle = Math.atan2(entity.y - p.y, entity.x - p.x);
+            entity.x += Math.cos(angle) * 10; entity.y += Math.sin(angle) * 10;
+            
+            if (entity.life <= 0) {
+                // 蜘蛛被击杀
+                this.state.entities.splice(index, 1);
+                inv.spiderSilk = (inv.spiderSilk || 0) + 2; // 掉落2个蜘蛛丝
+                
+                // 击杀蜘蛛扣理智 - 根据使用的武器决定扣理智值
+                let sanityLoss = 8; // 默认徒手或工具
+                if (toolUsed === 'spear') {
+                    sanityLoss = 6;
+                } else if (toolUsed === 'bow') {
+                    sanityLoss = 3; // 弓箭最低（距离远，看不清楚）
+                    this.state.lastKilledByBow = true; // 标记是弓箭击杀
+                }
+                p.sanity = Math.max(0, p.sanity - sanityLoss);
+                this.log(toolUsed === 'bow' ? "射杀蜘蛛：获得蜘蛛丝x2 (理智 -3)" : "击杀蜘蛛：获得蜘蛛丝x2 (理智 -" + sanityLoss + ")");
+                
+                // 如果弓箭击杀，中毒debuff减少
+                if (toolUsed === 'bow' && this.state.spiderPoisonTimer > 0) {
+                    // 弓箭击杀可以减少中毒时间（减半）
+                    this.state.spiderPoisonTimer = Math.floor(this.state.spiderPoisonTimer / 2);
+                    this.log("远距离击杀让毒素减轻了", false);
+                }
+                
+                // 工具耐久消耗
+                if (toolUsed === 'spear') {
+                    p.tools.spearDurability--;
+                    if (p.tools.spearDurability <= 0) {
+                        p.tools.spear = false;
+                        this.log("长矛损坏了！", true);
+                    }
+                }
+            } else {
+                // 蜘蛛被攻击但未死，反击玩家
+                this.log("攻击蜘蛛！", false);
+                // 如果被攻击，蜘蛛会反击（在update中处理）
+            }
             return;
         }
 
@@ -958,7 +1625,13 @@ class Game {
             case 'sapling': this.log("它还在生长..."); break; // 不能采集树苗
             case 'tree': 
                 if(!p.tools.axe || p.tools.axeDurability <= 0) return this.log("需要斧头");
-                entity.life -= 25; 
+                // --- 理智值低于40时，砍树速度降低 ---
+                let treeDamage = 25;
+                if (p.sanity < 40) {
+                    const sanityPenalty = (40 - p.sanity) / 40;
+                    treeDamage = Math.floor(25 * (1 - sanityPenalty * 0.3)); // 最多降低30%效率
+                }
+                entity.life -= treeDamage; 
                 if(entity.life <= 0) { 
                     const treeGrid = this.worldToGrid(entity.x, entity.y);
                     this.freeGrid(treeGrid.gx, treeGrid.gy);
@@ -980,7 +1653,13 @@ class Game {
                 break;
             case 'rock':
                 if(!p.tools.pickaxe || p.tools.pickaxeDurability <= 0) return this.log("需要矿镐");
-                entity.life -= 25;
+                // --- 理智值低于40时，挖矿速度降低 ---
+                let rockDamage = 25;
+                if (p.sanity < 40) {
+                    const sanityPenalty = (40 - p.sanity) / 40;
+                    rockDamage = Math.floor(25 * (1 - sanityPenalty * 0.3)); // 最多降低30%效率
+                }
+                entity.life -= rockDamage;
                 if(entity.life <= 0) { 
                     const rockGrid = this.worldToGrid(entity.x, entity.y);
                     this.freeGrid(rockGrid.gx, rockGrid.gy);
@@ -1061,50 +1740,87 @@ class Game {
             }
             else this.log("材料不足: 木材x1, 金块x1");
         }
+        else if (item === 'bow') {
+            if (inv.wood >= 2 && (inv.spiderSilk || 0) >= 3) {
+                inv.wood -= 2;
+                inv.spiderSilk -= 3;
+                tools.bow = true;
+                tools.bowDurability = 80; // 弓箭耐久度80
+                this.log("制作: 弓箭🏹 (耐久: 80)");
+            } else {
+                this.log("材料不足: 木材x2, 蜘蛛丝x3");
+            }
+        }
         else if (item === 'campfire') { 
             if (inv.wood >= 3 && inv.stone >= 2) { 
-                inv.wood -= 3; inv.stone -= 2; 
-                this.spawnEntity('campfire', this.state.player.x + 50, this.state.player.y); 
-                achievements.builtCampfires++;
-                this.checkAchievements();
-                this.log("建造: 营火"); 
-            } 
+                // 先尝试生成，成功后再扣除材料
+                const success = this.spawnEntity('campfire', this.state.player.x + 50, this.state.player.y);
+                if (success) {
+                    inv.wood -= 3; inv.stone -= 2; 
+                    achievements.builtCampfires++;
+                    this.checkAchievements();
+                    this.log("建造: 营火"); 
+                } else {
+                    // 生成失败，位置被占用，材料不扣除
+                    this.log("建造失败：位置已被占用！请换个位置。", true);
+                }
+            } else {
+                this.log("材料不足: 木材x3, 石头x2");
+            }
         }
         else if (item === 'tower') {
             if (inv.wood >= 8 && inv.stone >= 6 && inv.gold >= 2) {
-                inv.wood -= 8; inv.stone -= 6; inv.gold -= 2; 
-                this.spawnEntity('tower', this.state.player.x + 60, this.state.player.y); 
-                achievements.builtTowers++;
-                this.checkAchievements();
-                this.log("建造: 防御塔");
+                // 先尝试生成，成功后再扣除材料
+                const success = this.spawnEntity('tower', this.state.player.x + 60, this.state.player.y);
+                if (success) {
+                    inv.wood -= 8; inv.stone -= 6; inv.gold -= 2; 
+                    achievements.builtTowers++;
+                    this.checkAchievements();
+                    this.log("建造: 防御塔");
+                } else {
+                    // 生成失败，位置被占用，材料不扣除
+                    this.log("建造失败：位置已被占用！请换个位置。", true);
+                }
             } else {
                 this.log("材料不足: 木材x8, 石头x6, 金块x2");
             }
         }
         else if (item === 'bed') {
             if (inv.wood >= 6 && inv.grass >= 8) {
-                inv.wood -= 6; inv.grass -= 8;
-                this.spawnEntity('bed', this.state.player.x + 60, this.state.player.y);
-                // 设置基地位置
-                this.state.baseX = this.state.player.x + 60;
-                this.state.baseY = this.state.player.y;
-                this.state.hasBase = true;
-                this.log("建造: 床 🛏️ (基地标记)");
+                // 先尝试生成，成功后再扣除材料
+                const success = this.spawnEntity('bed', this.state.player.x + 60, this.state.player.y);
+                if (success) {
+                    inv.wood -= 6; inv.grass -= 8;
+                    // 设置基地位置
+                    this.state.baseX = this.state.player.x + 60;
+                    this.state.baseY = this.state.player.y;
+                    this.state.hasBase = true;
+                    this.log("建造: 床 🛏️ (基地标记)");
+                } else {
+                    // 生成失败，位置被占用，材料不扣除
+                    this.log("建造失败：位置已被占用！请换个位置。", true);
+                }
             } else {
                 this.log("材料不足: 木材x6, 干草x8");
             }
         }
         else if (item === 'beacon') {
             if (inv.stone >= 10 && inv.gold >= 5) {
-                inv.stone -= 10; inv.gold -= 5;
-                this.spawnEntity('beacon', this.state.player.x + 60, this.state.player.y);
-                // 灯塔也可以作为基地标记
-                if (!this.state.hasBase) {
-                    this.state.baseX = this.state.player.x + 60;
-                    this.state.baseY = this.state.player.y;
-                    this.state.hasBase = true;
+                // 先尝试生成，成功后再扣除材料
+                const success = this.spawnEntity('beacon', this.state.player.x + 60, this.state.player.y);
+                if (success) {
+                    inv.stone -= 10; inv.gold -= 5;
+                    // 灯塔也可以作为基地标记
+                    if (!this.state.hasBase) {
+                        this.state.baseX = this.state.player.x + 60;
+                        this.state.baseY = this.state.player.y;
+                        this.state.hasBase = true;
+                    }
+                    this.log("建造: 灯塔 🗼 (基地指引)");
+                } else {
+                    // 生成失败，位置被占用，材料不扣除
+                    this.log("建造失败：位置已被占用！请换个位置。", true);
                 }
-                this.log("建造: 灯塔 🗼 (基地指引)");
             } else {
                 this.log("材料不足: 石头x10, 金块x5");
             }
@@ -1114,9 +1830,34 @@ class Game {
 
     eat(type) {
         const p = this.state.player;
-        if (type === 'berry' && p.inventory.berry > 0) { p.inventory.berry--; p.hunger = Math.min(100, p.hunger + 10); p.health = Math.min(100, p.health + 2); this.log("吃了浆果"); } 
-        else if (type === 'meat' && p.inventory.meat > 0) { p.inventory.meat--; p.hunger = Math.min(100, p.hunger + 25); p.health = Math.min(100, p.health + 5); p.sanity = Math.min(100, p.sanity + 5); this.log("吃了小肉"); } 
-        else if (type === 'bigmeat' && p.inventory.bigmeat > 0) { p.inventory.bigmeat--; p.hunger = Math.min(100, p.hunger + 50); p.health = Math.min(100, p.health + 50); p.sanity = Math.min(100, p.sanity + 50); this.log("大肉真香！"); }
+        if (type === 'berry' && p.inventory.berry > 0) { 
+            p.inventory.berry--; 
+            p.hunger = Math.min(100, p.hunger + 10); 
+            p.health = Math.min(100, p.health + 2); 
+            this.log("吃了浆果"); 
+        } 
+        else if (type === 'meat' && p.inventory.meat > 0) { 
+            p.inventory.meat--; 
+            p.hunger = Math.min(100, p.hunger + 25); 
+            p.health = Math.min(100, p.health + 5); 
+            p.sanity = Math.min(100, p.sanity + 5); 
+            this.log("吃了小肉"); 
+        } 
+        else if (type === 'bigmeat' && p.inventory.bigmeat > 0) { 
+            p.inventory.bigmeat--; 
+            p.hunger = Math.min(100, p.hunger + 50); 
+            p.health = Math.min(100, p.health + 50); 
+            p.sanity = Math.min(100, p.sanity + 50); 
+            this.log("大肉真香！"); 
+        }
+        // --- 新增：腐肉逻辑 ---
+        else if (type === 'rottenmeat' && p.inventory.rottenmeat > 0) {
+            p.inventory.rottenmeat--;
+            p.hunger = Math.min(100, p.hunger + 10); // 加一点饱食度
+            p.health = Math.max(0, p.health - 5);     // 扣血
+            p.sanity = Math.max(0, p.sanity - 15);    // 大幅扣理智
+            this.log("呕...吃了腐肉 (理智-15 生命-5)", true);
+        }
         this.renderInventory();
     }
 
@@ -1162,6 +1903,20 @@ class Game {
                 ctx.scale(e.dir,1);
                 ctx.font="30px Segoe UI Emoji"; ctx.fillText("🐇",0,0);
             }
+            else if(e.type === 'spider') {
+                const img = this.images['spider'];
+                if (img && img.complete) {
+                    // 蜘蛛图标，缩放合适大小
+                    const size = 45 * ZOOM_SCALE;
+                    ctx.scale(e.dir, 1);
+                    ctx.drawImage(img, -size/2, -size/2, size, size);
+                } else {
+                    // 备用emoji
+                    ctx.scale(e.dir, 1);
+                    ctx.font="28px Segoe UI Emoji"; 
+                    ctx.fillText("🕷️",0,0);
+                }
+            }
             else if(e.type === 'boss_wolf') { 
                 // 血条显示（在变换之前绘制）
                 ctx.restore(); // 先恢复，以便使用绝对坐标
@@ -1186,6 +1941,39 @@ class Game {
                     ctx.font = "80px Segoe UI Emoji"; 
                     ctx.fillText("🐺", 0, 0);
                 }
+            }
+            else if(e.type === 'wolf') { 
+                // 血条显示（在变换之前绘制）
+                ctx.restore(); // 先恢复，以便使用绝对坐标
+                ctx.save();
+                if (e.life < e.maxLife) { // 只显示受伤时的血条
+                    ctx.fillStyle = "red"; 
+                    ctx.fillRect(dx - 30, dy - 45, 60, 5); 
+                    ctx.fillStyle = "#00ff00"; 
+                    ctx.fillRect(dx - 30, dy - 45, 60 * (e.life/e.maxLife), 5);
+                }
+                ctx.restore();
+                ctx.save();
+                ctx.translate(dx, dy);
+                
+                // 如果是敌对状态，添加红色发光效果
+                if (e.isHostile) {
+                    ctx.shadowColor = "red";
+                    ctx.shadowBlur = 15;
+                }
+
+                const img = this.images['wolf']; // 复用狼的图片
+                if (img && img.complete) {
+                    // 普通狼设置得比狼王小 (狼王是80，这里设为50)
+                    const size = 50 * ZOOM_SCALE; 
+                    ctx.scale(e.dir, 1);
+                    ctx.drawImage(img, -size/2, -size/2, size, size);
+                } else {
+                    ctx.scale(e.dir, 1); 
+                    ctx.font = "40px Segoe UI Emoji"; 
+                    ctx.fillText("🐺", 0, 0);
+                }
+                ctx.restore();
             }
             else if(e.type === 'tree') { 
                 const img = this.images['tree'];
@@ -1445,14 +2233,88 @@ class Game {
         ctx.fill();
         }
 
+        // 只在持有长矛时显示武器图标（斧头和镐子不显示，但仍可用于砍树和挖矿）
         if(p.tools.spear) { ctx.translate(p.dir*20, -10); ctx.rotate(p.dir*0.5); ctx.font="35px Segoe UI Emoji"; ctx.fillText("⚔️",0,0); }
-        else if(p.tools.axe) { ctx.translate(p.dir*20, -10); ctx.rotate(p.dir*0.5); ctx.font="30px Segoe UI Emoji"; ctx.fillText("🪓",0,0); }
-        else if(p.tools.pickaxe) { ctx.translate(p.dir*20, -10); ctx.rotate(p.dir*0.5); ctx.font="30px Segoe UI Emoji"; ctx.fillText("⛏",0,0); }
         
         ctx.restore();
 
         this.drawWeatherEffects();
+        this.drawBloodParticles(cam);
+        this.drawWindParticles(cam);
         this.drawLighting(cam);
+    }
+    
+    // --- 新增：绘制血滴粒子 ---
+    drawBloodParticles(cam) {
+        const ctx = this.ctx;
+        ctx.save();
+        
+        this.bloodParticles.forEach(p => {
+            const alpha = p.life / p.maxLife;
+            const x = p.x - cam.x;
+            const y = p.y - cam.y;
+            
+            // 只绘制在屏幕内的粒子
+            if (x > -50 && x < this.canvas.width + 50 && y > -50 && y < this.canvas.height + 50) {
+                ctx.globalAlpha = alpha;
+                ctx.fillStyle = '#8b0000'; // 深红色
+                ctx.beginPath();
+                ctx.arc(x, y, p.size, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // 添加一些随机的小血滴
+                if (Math.random() > 0.7) {
+                    ctx.fillStyle = '#cc0000'; // 亮红色
+                    ctx.beginPath();
+                    ctx.arc(x + (Math.random() - 0.5) * 5, y + (Math.random() - 0.5) * 5, p.size * 0.5, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+        });
+        
+        ctx.globalAlpha = 1;
+        ctx.restore();
+    }
+    
+    // --- 新增：绘制风粒子 ---
+    drawWindParticles(cam) {
+        const ctx = this.ctx;
+        ctx.save();
+        
+        this.windParticles.forEach(p => {
+            const alpha = (p.life / p.maxLife) * p.alpha;
+            const x = p.x - cam.x;
+            const y = p.y - cam.y;
+            
+            // 只绘制在屏幕内的粒子
+            if (x > -50 && x < this.canvas.width + 50 && y > -50 && y < this.canvas.height + 50) {
+                ctx.globalAlpha = alpha;
+                
+                // 绘制风粒子（使用半透明的白色/灰色，类似风的效果）
+                const gradient = ctx.createRadialGradient(x, y, 0, x, y, p.size);
+                gradient.addColorStop(0, `rgba(200, 220, 255, ${alpha})`);
+                gradient.addColorStop(0.5, `rgba(180, 200, 240, ${alpha * 0.5})`);
+                gradient.addColorStop(1, `rgba(160, 180, 220, 0)`);
+                
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(x, y, p.size, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // 添加一些线条效果，模拟风的流动
+                if (Math.random() > 0.7) {
+                    ctx.strokeStyle = `rgba(200, 220, 255, ${alpha * 0.5})`;
+                    ctx.lineWidth = 1;
+                    ctx.beginPath();
+                    ctx.moveTo(x, y);
+                    ctx.lineTo(x - p.vx * 2, y - p.vy * 2);
+                    ctx.stroke();
+                }
+            }
+        });
+        
+        ctx.globalAlpha = 1;
+        ctx.restore();
     }
     
     drawGrid(ctx, cam) {
@@ -1494,8 +2356,8 @@ class Game {
         if (weather.type === 'clear') return;
         
         ctx.save();
-        // 提高天气特效可见度
-        ctx.globalAlpha = Math.min(0.7, 0.4 + weather.intensity * 0.3);
+        // 基础透明度
+        ctx.globalAlpha = Math.min(0.8, 0.5 + weather.intensity * 0.4);
         
         switch (weather.type) {
             case 'rain':
@@ -1530,22 +2392,37 @@ class Game {
                 break;
                 
             case 'fog':
-                // 雾天效果：基于距离的可见度，越远越模糊
-                // 这个效果在drawLighting中实现，这里只绘制动态雾气团
+                // --- 美化版：流动云雾层 ---
                 if (this.weatherParticles.length > 0 && this.weatherParticles[0].t) {
-                    const time = (Date.now() - this.weatherParticles[0].t) / 1000;
-                    const fogCount = 8;
-                    ctx.globalAlpha = 0.2 * weather.intensity;
+                    const now = Date.now();
+                    const time = (now - this.weatherParticles[0].t) / 3000; // 极慢速流动
+                    const fogCount = 12; // 雾团数量
+                    
+                    // 使用叠加模式让雾气重叠处更白、更浓
+                    ctx.globalCompositeOperation = 'source-over';
+                    
                     for (let i = 0; i < fogCount; i++) {
-                        const angle = (i / fogCount) * Math.PI * 2 + time * 0.05;
-                        const radius = Math.max(this.width, this.height) * 0.2;
-                        const x = this.width/2 + Math.cos(angle) * radius * (0.5 + Math.sin(time + i) * 0.2);
-                        const y = this.height/2 + Math.sin(angle) * radius * (0.5 + Math.cos(time + i) * 0.2);
-                        const size = 120 + Math.sin(time * 0.3 + i) * 30;
+                        // 计算每个雾团的动态位置
+                        // 引入多个正弦波叠加，打破规律感
+                        const noiseX = Math.sin(time * 0.7 + i * 1.1);
+                        const noiseY = Math.cos(time * 0.5 + i * 1.7);
+                        
+                        const angle = (i / fogCount) * Math.PI * 2 + time * 0.2;
+                        const baseRadius = Math.max(this.width, this.height) * 0.6;
+                        const radius = baseRadius + noiseX * 100; // 半径也有呼吸感
+                        
+                        const x = this.width/2 + Math.cos(angle) * radius + noiseX * 50;
+                        const y = this.height/2 + Math.sin(angle) * radius * 0.7 + noiseY * 50;
+                        
+                        const size = 300 + Math.sin(time + i) * 100; // 大小随时间变化
                         
                         const fogGradient = ctx.createRadialGradient(x, y, 0, x, y, size);
-                        fogGradient.addColorStop(0, `rgba(200, 200, 210, ${0.3 * weather.intensity})`);
-                        fogGradient.addColorStop(1, 'rgba(180, 180, 190, 0)');
+                        
+                        // 雾气颜色：使用冷灰蓝色调，边缘完全透明
+                        const alpha = 0.12 * weather.intensity;
+                        fogGradient.addColorStop(0, `rgba(225, 230, 240, ${alpha})`);
+                        fogGradient.addColorStop(0.5, `rgba(210, 215, 230, ${alpha * 0.6})`);
+                        fogGradient.addColorStop(1, 'rgba(200, 200, 210, 0)');
                         
                         ctx.fillStyle = fogGradient;
                         ctx.beginPath();
@@ -1556,7 +2433,6 @@ class Game {
                 break;
                 
             case 'thunderstorm':
-                // 雷暴的可见度效果在drawLighting中实现，这里只绘制雨滴和闪电
                 ctx.globalAlpha = 0.8;
                 ctx.strokeStyle = 'rgba(80, 100, 150, 1.0)';
                 ctx.lineWidth = 2;
@@ -1586,90 +2462,162 @@ class Game {
         const cycle = this.getCycle();
         const weather = this.state.weather.type;
         const p = this.state.player;
+        
         let alpha = 0, color = "0,0,0";
         if (this.state.isBloodMoon) { alpha = 0.85; color = "40, 0, 0"; } 
         else { if (cycle === 'dusk') alpha = 0.35; if (cycle === 'night') alpha = 0.96; }
 
-        // 雾天和雷暴的可见度效果
         let fogVisibility = false;
         let fogIntensity = 0;
         if (weather === 'fog' || weather === 'thunderstorm') {
             fogVisibility = true;
             fogIntensity = this.state.weather.intensity;
         }
+        
+        // --- 理智值低于60时，屏幕可见度降低（类似雾天效果） ---
+        let sanityFogVisibility = false;
+        let sanityFogIntensity = 0;
+        if (p.sanity < 60) {
+            sanityFogVisibility = true;
+            // 理智值越低，可见度越低（60-0映射到0.3-0.8的强度）
+            sanityFogIntensity = 0.3 + (60 - p.sanity) / 60 * 0.5;
+        }
 
-        if (alpha > 0 || fogVisibility) {
+        if (alpha > 0 || fogVisibility || sanityFogVisibility) {
             const lCtx = this.lightCtx;
             lCtx.clearRect(0, 0, this.width, this.height);
             
+            // 1. 绘制基础环境光 (夜晚/黄昏)
             if (alpha > 0) {
                 lCtx.globalCompositeOperation = 'source-over'; 
                 lCtx.fillStyle = `rgba(${color},${alpha})`; 
                 lCtx.fillRect(0, 0, this.width, this.height);
             }
             
-            // 雾天/雷暴：距离遮罩效果 - 使用混合模式实现可见度渐变
+            // 2. 雾天/雷暴：高阶动态遮罩 (核心美化部分)
             if (fogVisibility) {
-                // 先绘制一层半透明覆盖层
                 lCtx.globalCompositeOperation = 'source-over';
                 const playerScreenX = p.x - cam.x;
                 const playerScreenY = p.y - cam.y;
                 
-                // 创建一个从玩家中心向外逐渐变白的遮罩
-                // 可见半径：大幅减少可见范围，让雾更浓
-                const baseVisibility = 100 - fogIntensity * 40; // 基础可见范围：100-60像素（原来150-100）
-                const maxRadius = Math.max(this.width, this.height) * 1.2;
+                const now = Date.now();
+                // --- 动态扰动逻辑 ---
+                // 呼吸效果：视野半径随时间缓慢缩放 (周期约3秒)
+                const breathe = Math.sin(now / 1500) * 25; 
+                // 漂移效果：视野中心随风轻微移动，不再死板地居中 (模拟雾在动)
+                const driftX = Math.cos(now / 2300) * 30;
+                const driftY = Math.sin(now / 2700) * 20;
+
+                // 基础可见半径 (天气越强半径越小)
+                const baseRadius = Math.max(60, 180 * (1 - fogIntensity * 0.65));
+                // 加上呼吸变化的最终半径
+                const actualRadius = baseRadius + breathe;
                 
-                // 使用径向渐变创建距离遮罩
+                // 加上漂移的中心点
+                const centerX = playerScreenX + driftX;
+                const centerY = playerScreenY + driftY;
+                
+                // 创建大范围径向渐变
+                // 从中心(0.1倍半径)到外部(3.5倍半径)，过渡非常柔和
                 const fogGradient = lCtx.createRadialGradient(
-                    playerScreenX, playerScreenY, baseVisibility * 0.4, // 中心更小
-                    playerScreenX, playerScreenY, maxRadius
+                    centerX, centerY, actualRadius * 0.1, 
+                    centerX, centerY, actualRadius * 3.5
                 );
                 
-                // 根据天气强度调整雾的浓度 - 大幅增强
-                const minFogAlpha = 0.6 + fogIntensity * 0.3; // 从0.4增加到0.6
-                const maxFogAlpha = 0.85 + fogIntensity * 0.15; // 从0.7增加到0.85
-                
-                if (weather === 'fog') {
-                    fogGradient.addColorStop(0, 'rgba(200, 200, 210, 0)'); // 中心清晰
-                    fogGradient.addColorStop(0.2, `rgba(190, 190, 200, ${minFogAlpha * 0.4})`); // 更快变浓
-                    fogGradient.addColorStop(0.5, `rgba(180, 180, 190, ${minFogAlpha * 0.8})`); // 更快变浓
-                    fogGradient.addColorStop(1, `rgba(160, 160, 180, ${maxFogAlpha})`); // 边缘完全模糊
-                } else if (weather === 'thunderstorm') {
-                    fogGradient.addColorStop(0, 'rgba(100, 100, 120, 0)'); // 中心较清晰
-                    fogGradient.addColorStop(0.2, `rgba(80, 80, 100, ${minFogAlpha * 0.5})`);
-                    fogGradient.addColorStop(0.5, `rgba(60, 60, 80, ${minFogAlpha * 0.9})`);
-                    fogGradient.addColorStop(1, `rgba(40, 40, 60, ${maxFogAlpha})`); // 边缘完全黑暗
-                }
+                // 雾的颜色和浓度
+                const maxFogAlpha = 0.92 + fogIntensity * 0.08; // 最高不透明度
+                const fogRgb = weather === 'thunderstorm' ? '30, 35, 45' : '210, 215, 225'; // 雷暴暗蓝灰，雾天天灰白
+
+                // 设置渐变点：使用非线性插值让中心区域看起来"透气"，边缘"厚重"
+                fogGradient.addColorStop(0, `rgba(${fogRgb}, 0)`);        // 核心完全透明
+                fogGradient.addColorStop(0.2, `rgba(${fogRgb}, 0.1)`);    // 稍微有一点点雾
+                fogGradient.addColorStop(0.4, `rgba(${fogRgb}, 0.4)`);    // 开始变浓
+                fogGradient.addColorStop(0.7, `rgba(${fogRgb}, 0.8)`);    // 远处很浓
+                fogGradient.addColorStop(1, `rgba(${fogRgb}, ${maxFogAlpha})`); // 边缘不可见
                 
                 lCtx.fillStyle = fogGradient;
                 lCtx.fillRect(0, 0, this.width, this.height);
             }
             
+            // 2.5. 理智值低时的可见度降低效果
+            if (sanityFogVisibility) {
+                lCtx.globalCompositeOperation = 'source-over';
+                const playerScreenX = p.x - cam.x;
+                const playerScreenY = p.y - cam.y;
+                
+                const now = Date.now();
+                // 轻微的呼吸效果
+                const breathe = Math.sin(now / 2000) * 15;
+                // 轻微的漂移效果
+                const driftX = Math.cos(now / 3000) * 20;
+                const driftY = Math.sin(now / 3500) * 15;
+                
+                // 基础可见半径（理智值越低，半径越小）
+                const baseRadius = Math.max(80, 200 * (1 - sanityFogIntensity * 0.5));
+                const actualRadius = baseRadius + breathe;
+                
+                const centerX = playerScreenX + driftX;
+                const centerY = playerScreenY + driftY;
+                
+                // 创建径向渐变（使用暗紫色调，表示精神不稳定）
+                const sanityFogGradient = lCtx.createRadialGradient(
+                    centerX, centerY, actualRadius * 0.1,
+                    centerX, centerY, actualRadius * 3.0
+                );
+                
+                // 理智值低时的颜色：暗紫色调
+                const maxSanityFogAlpha = 0.5 + sanityFogIntensity * 0.3; // 0.5-0.8的不透明度
+                const sanityFogRgb = '80, 60, 100'; // 暗紫色
+                
+                sanityFogGradient.addColorStop(0, `rgba(${sanityFogRgb}, 0)`);
+                sanityFogGradient.addColorStop(0.2, `rgba(${sanityFogRgb}, ${0.1 * sanityFogIntensity})`);
+                sanityFogGradient.addColorStop(0.4, `rgba(${sanityFogRgb}, ${0.3 * sanityFogIntensity})`);
+                sanityFogGradient.addColorStop(0.7, `rgba(${sanityFogRgb}, ${0.6 * sanityFogIntensity})`);
+                sanityFogGradient.addColorStop(1, `rgba(${sanityFogRgb}, ${maxSanityFogAlpha})`);
+                
+                lCtx.fillStyle = sanityFogGradient;
+                lCtx.fillRect(0, 0, this.width, this.height);
+            }
+            
+            // 3. 光源穿透逻辑 (挖空遮罩)
             lCtx.globalCompositeOperation = 'destination-out';
             
+            // 玩家自带的微弱心理光环 (也加上一点呼吸感)
+            const breatheSanity = Math.sin(Date.now() / 1000) * 2;
             const sanityScale = Math.max(0.4, p.sanity / 100);
-            let g = lCtx.createRadialGradient(p.x-cam.x, p.y-cam.y, 15, p.x-cam.x, p.y-cam.y, 70*sanityScale);
+            let g = lCtx.createRadialGradient(p.x-cam.x, p.y-cam.y, 10, p.x-cam.x, p.y-cam.y, 65 * sanityScale + breatheSanity);
             g.addColorStop(0, 'rgba(0,0,0,1)'); g.addColorStop(1, 'rgba(0,0,0,0)');
             lCtx.fillStyle = g; lCtx.beginPath(); lCtx.arc(p.x-cam.x, p.y-cam.y, 80, 0, Math.PI*2); lCtx.fill();
 
+            // 实体光源 (火堆、塔、灯塔)
             this.state.entities.forEach(e => {
                 if(e.type === 'campfire') {
-                    const r = e.life * 2.2 + Math.random() * 5;
-                    let fireG = lCtx.createRadialGradient(e.x-cam.x, e.y-cam.y, 20, e.x-cam.x, e.y-cam.y, r);
+                    // 火光闪烁 - 增加照亮范围
+                    const r = e.life * 3.5 + Math.random() * 8; // 从2.2增加到3.5，随机值从5增加到8
+                    let fireG = lCtx.createRadialGradient(e.x-cam.x, e.y-cam.y, 15, e.x-cam.x, e.y-cam.y, r);
                     fireG.addColorStop(0, 'rgba(0,0,0,1)'); fireG.addColorStop(1, 'rgba(0,0,0,0)');
                     lCtx.fillStyle = fireG; lCtx.beginPath(); lCtx.arc(e.x-cam.x, e.y-cam.y, r, 0, Math.PI*2); lCtx.fill();
                 }
                 else if(e.type === 'tower') {
-                    // 防御塔照亮功能 - 金色光环
-                    const towerRange = 180; // 照亮范围
+                    const towerRange = 180;
                     const towerG = lCtx.createRadialGradient(e.x-cam.x, e.y-cam.y, 30, e.x-cam.x, e.y-cam.y, towerRange);
                     towerG.addColorStop(0, 'rgba(0,0,0,1)');
-                    towerG.addColorStop(0.7, 'rgba(0,0,0,0.8)');
+                    towerG.addColorStop(0.7, 'rgba(0,0,0,0.8)'); // 塔的光稍微硬一点
                     towerG.addColorStop(1, 'rgba(0,0,0,0)');
                     lCtx.fillStyle = towerG; 
                     lCtx.beginPath(); 
                     lCtx.arc(e.x-cam.x, e.y-cam.y, towerRange, 0, Math.PI*2); 
+                    lCtx.fill();
+                }
+                else if(e.type === 'beacon') {
+                    // 灯塔强力穿透
+                    const beaconRange = 350;
+                    const beaconG = lCtx.createRadialGradient(e.x-cam.x, e.y-cam.y, 40, e.x-cam.x, e.y-cam.y, beaconRange);
+                    beaconG.addColorStop(0, 'rgba(0,0,0,1)');
+                    beaconG.addColorStop(1, 'rgba(0,0,0,0)');
+                    lCtx.fillStyle = beaconG;
+                    lCtx.beginPath();
+                    lCtx.arc(e.x-cam.x, e.y-cam.y, beaconRange, 0, Math.PI*2);
                     lCtx.fill();
                 }
             });
@@ -1791,13 +2739,13 @@ class Game {
                         e.life = Math.max(0, e.life - (0.04 + intensity * 0.03)); // 从0.02增强到0.04-0.07
                     }
                 });
-                // 下雨大幅降低理智
-                p.sanity = Math.max(0, p.sanity - (0.04 + intensity * 0.02)); // 从0.02增强到0.04-0.06
+                // 下雨降低理智（降低下降速度）
+                p.sanity = Math.max(0, p.sanity - (0.015 + intensity * 0.01)); // 从0.04-0.06降低到0.015-0.025
                 break;
                 
             case 'fog':
-                // 雾天大幅降低理智
-                p.sanity = Math.max(0, p.sanity - (0.03 + intensity * 0.02)); // 从0.01增强到0.03-0.05
+                // 雾天降低理智（降低下降速度）
+                p.sanity = Math.max(0, p.sanity - (0.012 + intensity * 0.008)); // 从0.03-0.05降低到0.012-0.02
                 // 雾天防御塔精度降低已经在 tower 更新逻辑中处理
                 break;
                 
@@ -1830,59 +2778,98 @@ class Game {
     }
     checkNearFire() { 
         const p=this.state.player; 
-        // 检查营火照明
-        const nearCampfire = this.state.entities.some(e=>e.type==='campfire'&&Math.hypot(e.x-p.x,e.y-p.y)<e.life*2.5);
-        // 检查防御塔照明（180像素范围）
-        const nearTower = this.state.entities.some(e=>e.type==='tower'&&Math.hypot(e.x-p.x,e.y-p.y)<180);
-        return nearCampfire || nearTower;
+        // 检查营火照明 - 理智值恢复范围（比照明范围小，确保真正靠近）
+        const nearCampfire = this.state.entities.some(e=>e.type==='campfire'&&e.life>0&&Math.hypot(e.x-p.x,e.y-p.y)<200); // 200像素范围内才算靠近营火
+        // 检查防御塔照明（150像素范围，比照明范围小）
+        const nearTower = this.state.entities.some(e=>e.type==='tower'&&Math.hypot(e.x-p.x,e.y-p.y)<150);
+        // 检查灯塔照明（300像素范围，比照明范围小）
+        const nearBeacon = this.state.entities.some(e=>e.type==='beacon'&&Math.hypot(e.x-p.x,e.y-p.y)<300);
+        return nearCampfire || nearTower || nearBeacon;
+    }
+    
+    checkNearBase() {
+        const p = this.state.player;
+        if (!this.state.hasBase || this.state.baseX === undefined || this.state.baseY === undefined) {
+            return false;
+        }
+        const baseDistance = Math.hypot(p.x - this.state.baseX, p.y - this.state.baseY);
+        return baseDistance < 50 * TILE_SIZE; // 基地50格范围内算靠近（2500像素）
     }
     shakeCamera(amount) { this.state.camera.x += (Math.random()-0.5)*amount; this.state.camera.y += (Math.random()-0.5)*amount; }
     
     updateUI() {
         const p = this.state.player;
+        // 更新三维状态条
         document.getElementById('bar-health').style.width = Math.min(100, p.health) + '%';
         document.getElementById('bar-hunger').style.width = Math.min(100, p.hunger) + '%';
         document.getElementById('bar-sanity').style.width = Math.min(100, p.sanity) + '%';
-        document.getElementById('day-counter').innerText = `存活天数: ${this.state.day}`;
+        
+        // --- 修改点 1：优化存活天数显示 ---
+        // 显示当前是第几天
+        document.getElementById('day-counter').innerText = `第 ${this.state.day} 天`;
+        
+        // 更新时钟旋转角度
         document.getElementById('clock-face').style.transform = `rotate(-${(this.state.time/DAY_LENGTH)*360}deg)`;
         
         // 更新基地指引UI
         this.updateBaseCompass();
         
-        // 更新天气显示和效果提示
+        // --- 修改点 2：详细列出所有天气效果 ---
         const weatherNames = { 'clear': '晴朗', 'rain': '雨天', 'fog': '雾天', 'snow': '雪天', 'thunderstorm': '雷暴' };
+        
+        // 在这里把所有的正面(Buff)和负面(Debuff)效果都写清楚
         const weatherEffects = { 
-            'clear': '', 
-            'rain': '💧 理智-  营火易熄', 
-            'fog': '🌫️ 视野↓  理智-  塔射程↓', 
-            'snow': '❄️ 移速↓  饥饿++',
-            'thunderstorm': '⚡ 理智--  营火快熄' 
+            'clear': '✨ 视野清晰  适宜探索', 
+            'rain': '💧 移速↓  理智↓  营火易熄', 
+            'fog': '🌫️ 视野↓↓  理智↓  塔射程↓', 
+            'snow': '❄️ 移速↓↓  饥饿消耗↑',
+            'thunderstorm': '⚡ 移速↓  理智↓↓  营火极易熄' 
         };
         
         const wi = document.getElementById('weather-info');
         const we = document.getElementById('weather-effects');
+        
         if (wi) { 
             wi.innerHTML = `<span class="game-icon icon-weather-${this.state.weather.type}"></span> ${weatherNames[this.state.weather.type] || '晴朗'}`; 
             wi.style.display = 'block'; 
         }
+        
         if (we) {
             we.innerText = weatherEffects[this.state.weather.type] || '';
-            we.style.display = this.state.weather.type !== 'clear' ? 'block' : 'none';
+            we.style.display = 'block'; // 始终显示，让玩家随时了解状态
+            
+            // --- 修改点 3：根据天气好坏改变提示框颜色 ---
+            if (this.state.weather.type === 'clear') {
+                // 晴天显示为安心的绿色
+                we.style.color = '#aaddaa';
+                we.style.borderColor = 'rgba(100, 200, 100, 0.5)';
+                we.style.background = 'rgba(100, 200, 100, 0.15)';
+            } else {
+                // 恶劣天气显示为警示的橙色
+                we.style.color = '#ffaa00';
+                we.style.borderColor = 'rgba(255, 165, 0, 0.6)';
+                we.style.background = 'rgba(255, 165, 0, 0.25)';
+            }
         }
         
-        // 更新天气覆盖层类名
+        // 更新天气覆盖层（视觉滤镜）
         const weatherOverlay = document.getElementById('weather-overlay');
         if (weatherOverlay) {
             weatherOverlay.className = 'weather-overlay ' + this.state.weather.type;
         }
+        
+        // 濒死红屏特效
         if(p.health < 30) document.getElementById('game-wrapper').style.boxShadow = `inset 0 0 60px rgba(139,0,0,${Math.abs(Math.sin(Date.now()/300))})`;
         else document.getElementById('game-wrapper').style.boxShadow = 'none';
+        
         const inv = p.inventory;
-        // 按钮状态更新
+        // 制作按钮状态更新（材料不足变灰）
         document.getElementById('craft-axe').disabled = !(inv.twig >=2 && inv.flint >=2);
         document.getElementById('craft-pickaxe').disabled = !(inv.twig >=2 && inv.flint >=2);
         document.getElementById('craft-fire').disabled = !(inv.wood >=3 && inv.stone >=2);
         document.getElementById('craft-spear').disabled = !(inv.wood >=1 && inv.gold >=1);
+        document.getElementById('craft-bow').disabled = !(inv.wood >=2 && (inv.spiderSilk || 0) >= 3);
+        
         const towerBtn = document.getElementById('craft-tower'); if (towerBtn) towerBtn.disabled = !(inv.wood >=8 && inv.stone >=6 && inv.gold >=2);
         const bedBtn = document.getElementById('craft-bed'); if (bedBtn) bedBtn.disabled = !(inv.wood >=6 && inv.grass >=8);
         const beaconBtn = document.getElementById('craft-beacon'); if (beaconBtn) beaconBtn.disabled = !(inv.stone >=10 && inv.gold >=5);
@@ -1892,21 +2879,23 @@ class Game {
         const axeDurabilityEl = document.getElementById('tool-axe-durability');
         const pickaxeDurabilityEl = document.getElementById('tool-pickaxe-durability');
         const spearDurabilityEl = document.getElementById('tool-spear-durability');
+        const bowDurabilityEl = document.getElementById('tool-bow-durability');
         if (axeDurabilityEl) axeDurabilityEl.innerText = tools.axe ? tools.axeDurability : 0;
         if (pickaxeDurabilityEl) pickaxeDurabilityEl.innerText = tools.pickaxe ? tools.pickaxeDurability : 0;
         if (spearDurabilityEl) spearDurabilityEl.innerText = tools.spear ? tools.spearDurability : 0;
+        if (bowDurabilityEl) bowDurabilityEl.innerText = tools.bow ? tools.bowDurability : 0;
         
-        // 如果背包打开，更新背包中的数据
+        // 如果背包打开，实时更新背包数据
         if (this.ui.inventoryOpen) {
             this.renderInventory();
         }
         
-        // 如果成就面板打开，更新成就数据
+        // 如果成就面板打开，实时更新成就数据
         if (this.ui.achievementsOpen) {
             this.updateAchievementsUI();
         }
         
-        // 更新基地指引UI
+        // 实时更新指南针距离
         this.updateBaseCompass();
     }
     
@@ -1975,7 +2964,7 @@ class Game {
     renderInventory() {
         const inv = this.state.player.inventory;
         
-        // 更新背包面板中的数值
+        // 更新原有文本
         document.getElementById('inv-twig').innerText = inv.twig;
         document.getElementById('inv-grass').innerText = inv.grass;
         document.getElementById('inv-flint').innerText = inv.flint;
@@ -1987,11 +2976,23 @@ class Game {
         document.getElementById('inv-bigmeat').innerText = inv.bigmeat;
         document.getElementById('inv-pinecone').innerText = inv.pinecone;
         
-        // 更新食物按钮状态
+        // --- 新增：更新腐肉数量 ---
+        const rottenEl = document.getElementById('inv-rottenmeat');
+        if(rottenEl) rottenEl.innerText = inv.rottenmeat;
+        
+        // --- 新增：更新蜘蛛丝数量 ---
+        const spiderSilkEl = document.getElementById('inv-spiderSilk');
+        if(spiderSilkEl) spiderSilkEl.innerText = inv.spiderSilk || 0;
+        
+        // 更新原有按钮状态
         document.getElementById('eat-berry').disabled = inv.berry <= 0;
         document.getElementById('eat-meat').disabled = inv.meat <= 0;
         document.getElementById('eat-bigmeat').disabled = inv.bigmeat <= 0;
         document.getElementById('action-plant').disabled = inv.pinecone <= 0;
+
+        // --- 新增：更新腐肉按钮状态 ---
+        const eatRottenBtn = document.getElementById('eat-rottenmeat');
+        if(eatRottenBtn) eatRottenBtn.disabled = inv.rottenmeat <= 0;
     }
     
     toggleInventory() {
@@ -2002,7 +3003,7 @@ class Game {
         if (this.ui.inventoryOpen) {
             this.renderInventory();
         }
-        // 面板打开时暂停游戏计时（在update中已处理）
+        // 面板打开时游戏逻辑继续运行
     }
     
     toggleAchievements() {
@@ -2013,7 +3014,7 @@ class Game {
         if (this.ui.achievementsOpen) {
             this.updateAchievementsUI();
         }
-        // 面板打开时暂停游戏计时（在update中已处理）
+        // 面板打开时游戏逻辑继续运行
     }
     
     closeAllPanels() {
@@ -2196,7 +3197,7 @@ class Game {
         this.ui.craftOpen = !this.ui.craftOpen;
         const panel = document.getElementById('crafting-panel');
         panel.style.display = this.ui.craftOpen ? 'block' : 'none';
-        // 面板打开时暂停游戏计时（在update中已处理）
+        // 面板打开时游戏逻辑继续运行
     }
     loadGame() { 
         const s = localStorage.getItem('dst_v7_save'); 
