@@ -518,8 +518,6 @@ class Game {
             speed *= (0.65 - weatherIntensity * 0.1); // 雪天大幅减速：65%-55%
         } else if (weather === 'rain') {
             speed *= (0.85 - weatherIntensity * 0.1); // 雨天轻微减速：85%-75%
-        } else if (weather === 'fog') {
-            speed *= (0.80 - weatherIntensity * 0.1); // 雾天减速：80%-70%
         } else if (weather === 'thunderstorm') {
             speed *= (0.70 - weatherIntensity * 0.1); // 雷暴大幅减速：70%-60%
         }
