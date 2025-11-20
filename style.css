@@ -1,0 +1,590 @@
+:root {
+    --bg-dark: #0f0f0f;
+    --parchment: #d7c6a3;
+    --wood-dark: #3e2723;
+    --text-ink: #2c1a0f;
+    --gold: #d4af37;
+}
+
+body {
+    margin: 0;
+    overflow: hidden;
+    background-color: var(--bg-dark);
+    font-family: 'Noto Serif SC', 'Songti SC', serif;
+    color: var(--text-ink);
+    user-select: none;
+}
+
+#game-wrapper { 
+    position: relative; width: 100vw; height: 100vh; 
+    /* 默认鼠标样式 */
+    cursor: crosshair; 
+}
+canvas { display: block; }
+
+#ui-layer {
+    position: absolute; top: 0; left: 0;
+    width: 100%; height: 100%;
+    pointer-events: none;
+}
+
+/* --- 保持原有样式不变，省略部分代码 --- */
+/* 直接复制上一版的 CSS 内容即可，唯一需要修改的是上面的 #game-wrapper cursor */
+
+.parchment-panel {
+    position: absolute;
+    background: var(--parchment);
+    border: 4px solid var(--wood-dark);
+    border-radius: 4px;
+    box-shadow: inset 0 0 20px rgba(62, 39, 35, 0.4), 0 10px 20px rgba(0,0,0,0.6);
+    padding: 15px;
+    pointer-events: auto;
+}
+.parchment-panel::before {
+    content: ""; position: absolute; top:0; left:0; right:0; bottom:0;
+    background-image: url("data:image/svg+xml,%3Csvg width='100' height='100' viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.05'/%3E%3C/svg%3E");
+    pointer-events: none; z-index: 0;
+}
+
+#stats-panel { top: 20px; right: 20px; width: 220px; z-index: 10; }
+
+/* 基地指引指南针 - 移到时间面板下方 */
+#base-compass {
+    position: absolute;
+    top: 110px;  /* 移到时间面板下方 */
+    left: 20px;  /* 左侧对齐时间面板 */
+    background: rgba(0, 0, 0, 0.7);
+    border: 2px solid rgba(212, 175, 55, 0.8);
+    border-radius: 8px;
+    display: none;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 8px 15px;
+    z-index: 15;
+    box-shadow: 0 5px 20px rgba(0, 0, 0, 0.9);
+    min-width: 120px;
+}
+
+#compass-arrow {
+    /* 显示方向文字，大号显示 */
+    width: auto;
+    height: auto;
+    border: none;
+    font-size: 28px;
+    color: var(--gold);
+    font-weight: bold;
+    text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+    margin: 0;
+}
+
+#base-distance {
+    color: var(--parchment);
+    font-size: 14px;
+    font-weight: bold;
+    text-shadow: 1px 1px 2px #000;
+    margin: 0;
+}
+.stat-row { margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+.stat-icon { font-size: 20px; font-weight: bold; }
+.bar-frame { flex-grow: 1; height: 14px; background: #2a1a10; border: 2px solid #5d4037; border-radius: 2px; padding: 1px; overflow: hidden; }
+.bar-fill { height: 100%; transition: width 0.3s; border-right: 1px solid rgba(255,255,255,0.3); }
+.health-fill { background: repeating-linear-gradient(45deg, #8b0000, #8b0000 10px, #a00000 10px, #a00000 20px); }
+.hunger-fill { background: repeating-linear-gradient(45deg, #d35400, #d35400 10px, #e67e22 10px, #e67e22 20px); }
+.sanity-fill { background: repeating-linear-gradient(45deg, #2c3e50, #2c3e50 10px, #34495e 10px, #34495e 20px); }
+
+/* 时间面板 - 顶部左侧，包含天气信息 */
+#time-panel {
+    position: absolute;
+    top: 15px;
+    left: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: rgba(0, 0, 0, 0.7);
+    padding: 10px 15px;
+    border-radius: 12px;
+    border: 2px solid rgba(78, 52, 46, 0.8);
+    box-shadow: 0 5px 20px rgba(0, 0, 0, 0.9);
+    z-index: 10;
+    min-width: 250px;
+}
+
+/* 第一行：时钟、天数、天气信息 - 水平排列 */
+.time-panel-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: nowrap;
+}
+
+#time-panel > .time-panel-row > #clock-container {
+    flex-shrink: 0;
+}
+
+#time-panel > .time-panel-row > #day-counter {
+    margin: 0;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+#time-panel > .time-panel-row > #weather-info {
+    margin: 0;
+    display: none; /* 默认隐藏，由JS控制显示 */
+    flex-shrink: 0;
+}
+
+/* 第二行：天气效果 - 单独一行 */
+#time-panel > #weather-effects {
+    margin: 0;
+    display: none; /* 默认隐藏，由JS控制显示 */
+    width: 100%;
+    margin-top: 0;
+}
+
+#clock-container { 
+    width: 70px; 
+    height: 70px; 
+    border-radius: 50%; 
+    background: #111; 
+    box-shadow: 0 3px 10px rgba(0,0,0,0.8); 
+    position: relative;
+}
+#clock-rim { position: absolute; width: 100%; height: 100%; border-radius: 50%; border: 4px solid #4e342e; box-sizing: border-box; z-index: 2; }
+#clock-face { position: absolute; top: 4px; left: 4px; width: calc(100% - 8px); height: calc(100% - 8px); border-radius: 50%; background: conic-gradient(#f1c40f 0% 50%, #c0392b 50% 65%, #0f1525 65% 100%); }
+#clock-arrow { position: absolute; top: 2px; left: 50%; width: 4px; height: 50%; background: var(--gold); border: 1px solid #000; transform-origin: bottom center; transform: translateX(-50%); z-index: 3; clip-path: polygon(50% 0%, 0% 100%, 100% 100%); }
+
+#day-counter { 
+    color: var(--parchment); 
+    font-size: 16px; 
+    text-shadow: 2px 2px 0 #000; 
+    font-weight: bold;
+}
+
+#weather-info {
+    color: #fff;
+    font-size: 16px;
+    font-weight: bold;
+    text-shadow: 1px 1px 2px #000;
+    display: none; /* 默认隐藏，由JS控制 */
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+}
+
+#weather-effects {
+    background: rgba(255, 165, 0, 0.2);
+    border: 1px solid rgba(255, 165, 0, 0.6);
+    border-radius: 6px;
+    padding: 6px 12px;
+    color: #ffa500;
+    font-size: 12px;
+    font-weight: bold;
+    text-shadow: 1px 1px 2px #000;
+    white-space: nowrap;
+    display: none;
+    text-align: center;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+/* 制作面板 - 左侧显示 */
+#crafting-panel { 
+    position: absolute !important;
+    top: 80px !important;
+    left: 20px !important;
+    transform: none !important;
+    width: 240px;
+    max-height: calc(100vh - 100px);
+    overflow-y: auto;
+    z-index: 100;
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+    padding: 18px;
+    margin: 0 !important;
+}
+.panel-header { text-align: center; font-size: 20px; font-weight: bold; border-bottom: 2px solid var(--text-ink); margin-bottom: 5px; }
+.craft-btn { 
+    background: linear-gradient(to bottom, #d7c6a3, #c8b495); 
+    border: 2px solid #8d6e63; 
+    color: var(--text-ink); 
+    padding: 12px; 
+    cursor: pointer; 
+    display: flex; 
+    align-items: center; 
+    gap: 12px; 
+    transition: all 0.2s; 
+    font-family: inherit; 
+    font-weight: bold; 
+    border-radius: 4px; 
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    width: 100%;
+    min-height: 60px;
+    box-sizing: border-box;
+}
+.craft-btn:hover { background: linear-gradient(to bottom, #e5d6b8, #d7c6a3); transform: translateY(-2px); box-shadow: 0 4px 8px rgba(0,0,0,0.2); }
+.craft-btn:disabled { opacity: 0.5; cursor: not-allowed; filter: grayscale(1); background: #a1887f; }
+.btn-icon { 
+    font-size: 28px; 
+    width: 40px; 
+    height: 40px;
+    text-align: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+.btn-info { 
+    flex: 1;
+    text-align: left;
+}
+.btn-info b { font-size: 16px; display: block; margin-bottom: 2px; }
+.btn-info span { font-size: 13px; color: #5d4037; font-weight: normal; }
+
+#inventory-bar { position: absolute; bottom: 20px; right: 20px; left: auto; transform: none; background: linear-gradient(to bottom, #4e342e, #3e2723); padding: 10px; border: 3px solid #5d4037; border-radius: 8px; box-shadow: 0 5px 20px rgba(0,0,0,0.8); pointer-events: auto; transition: all 0.3s ease; }
+#inventory-bar:hover { transform: translateY(-5px); box-shadow: 0 8px 25px rgba(0,0,0,0.9); }
+#inventory-slots { display: grid; grid-template-columns: repeat(5, 60px); gap: 8px; }
+.slot { width: 60px; height: 60px; background: linear-gradient(to bottom, #6d4c41, #5d4037); border: 3px solid #4e342e; border-radius: 8px; display: flex; justify-content: center; align-items: center; position: relative; cursor: default; box-shadow: inset 0 2px 4px rgba(0,0,0,0.3), 0 2px 6px rgba(0,0,0,0.4); transition: all 0.2s ease; overflow: hidden; }
+.slot:hover { background: linear-gradient(to bottom, #7d5c51, #6d4c41); transform: translateY(-2px); box-shadow: inset 0 2px 6px rgba(0,0,0,0.2), 0 4px 12px rgba(0,0,0,0.5); }
+.slot .count { position: absolute; bottom: 3px; right: 3px; font-size: 14px; color: #fff; text-shadow: 1px 1px 0 #000; font-family: sans-serif; font-weight: bold; background: rgba(0,0,0,0.6); padding: 2px 5px; border-radius: 4px; min-width: 20px; text-align: center; }
+
+/* 制作按钮图标样式 - 已在上面的 .btn-icon 中定义 */
+
+/* 状态图标样式 */
+.stat-icon {
+    width: 24px;
+    height: 24px;
+    display: inline-block;
+    vertical-align: middle;
+}
+
+#controls-panel { position: absolute; bottom: 20px; left: 20px; right: auto; text-align: left; color: rgba(255,255,255,0.8); font-size: 14px; pointer-events: auto; }
+#controls-panel button { background: var(--parchment-dark); border: 2px solid var(--wood-dark); font-family: inherit; font-weight: bold; cursor: pointer; padding: 5px 10px; font-size: 14px; color: var(--text-ink); margin-left: 5px; }
+#controls-panel button:hover { background: var(--parchment); }
+#message-log { position: absolute; top: 150px; left: 50%; transform: translateX(-50%); font-size: 26px; color: #fff; text-shadow: 0 2px 5px #000; pointer-events: none; opacity: 0; transition: opacity 0.5s; font-weight: bold; }
+
+.panel-header { position: relative; }
+.panel-toggle { position: absolute; right: 6px; top: -2px; background: rgba(0,0,0,0.1); border: 1px solid #8d6e63; border-radius: 3px; padding: 0 6px; cursor: pointer; font-size: 16px; }
+.panel-toggle:hover { background: rgba(255,255,255,0.3); }
+
+/* 重复样式已删除，统一使用上面的定义 */
+
+/* 黄金样式 */
+.gold-text { color: #ffd700; text-shadow: 1px 1px 0 #000; }
+
+/* 背包面板 - 左侧显示 */
+#inventory-panel {
+    position: absolute;
+    top: 80px;
+    left: 20px;
+    transform: none;
+    width: 480px;
+    max-height: calc(100vh - 100px);
+    overflow-y: auto;
+    z-index: 100;
+    padding: 18px;
+}
+
+.inventory-section {
+    margin-bottom: 15px;
+    padding-bottom: 10px;
+    border-bottom: 2px dashed #8d6e63;
+}
+
+.inventory-section:last-child {
+    border-bottom: none;
+}
+
+.section-title {
+    font-size: 16px;
+    font-weight: bold;
+    margin-bottom: 10px;
+    color: var(--wood-dark);
+    text-align: center;
+}
+
+.inventory-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+}
+
+.inventory-item {
+    background: linear-gradient(to bottom, #6d4c41, #5d4037);
+    border: 3px solid #4e342e;
+    border-radius: 8px;
+    padding: 10px;
+    text-align: center;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.3);
+}
+
+.inventory-item .game-icon {
+    font-size: 32px;
+    margin-bottom: 5px;
+}
+
+.item-name {
+    font-size: 13px;
+    color: var(--text-ink);
+    font-weight: bold;
+    margin-bottom: 4px;
+}
+
+.item-count {
+    font-size: 18px;
+    color: #ffd700;
+    font-weight: bold;
+    text-shadow: 1px 1px 2px #000;
+}
+
+/* 食物网格 */
+.food-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+}
+
+.food-item-btn {
+    background: linear-gradient(to bottom, #d7c6a3, #c8b495);
+    border: 3px solid #8d6e63;
+    border-radius: 8px;
+    padding: 10px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-family: inherit;
+}
+
+.food-item-btn:hover:not(:disabled) {
+    background: linear-gradient(to bottom, #e5d6b8, #d7c6a3);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+}
+
+.food-item-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    filter: grayscale(1);
+}
+
+.food-item-btn .game-icon {
+    font-size: 36px;
+    margin-bottom: 5px;
+}
+
+.food-effect {
+    font-size: 11px;
+    color: #2e7d32;
+    font-weight: bold;
+    margin-top: 5px;
+}
+
+/* 种植按钮 */
+.action-btn {
+    background: linear-gradient(to bottom, #d7c6a3, #c8b495);
+    border: 3px solid #8d6e63;
+    border-radius: 8px;
+    padding: 12px;
+    width: 100%;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-family: inherit;
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.action-btn:hover:not(:disabled) {
+    background: linear-gradient(to bottom, #e5d6b8, #d7c6a3);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+}
+
+.action-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    filter: grayscale(1);
+}
+
+.action-btn .game-icon {
+    font-size: 40px;
+}
+
+.action-info {
+    flex: 1;
+    text-align: left;
+}
+
+.action-info .item-name {
+    font-size: 16px;
+    margin-bottom: 4px;
+}
+
+.action-info .item-count {
+    font-size: 14px;
+    color: var(--text-ink);
+}
+
+.action-info .item-count span {
+    color: #ffd700;
+    font-weight: bold;
+}
+
+/* 成就面板 - 左侧显示 */
+#achievements-panel {
+    position: absolute;
+    top: 80px;
+    left: 20px;
+    transform: none;
+    width: 500px;
+    max-height: calc(100vh - 100px);
+    overflow-y: auto;
+    z-index: 100;
+    display: none;
+    padding: 18px;
+}
+
+/* 成就弹窗 - 居中显示 */
+#achievement-popup {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.8);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 200;
+    pointer-events: auto; /* 确保弹窗可以接收点击事件 */
+}
+
+.achievement-popup-content {
+    background: linear-gradient(to bottom, #d7c6a3, #c8b495);
+    border: 5px solid #d4af37;
+    border-radius: 16px;
+    padding: 40px;
+    text-align: center;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.9);
+    min-width: 400px;
+    animation: achievementBounce 0.5s ease-out;
+}
+
+@keyframes achievementBounce {
+    0% { transform: scale(0.5); opacity: 0; }
+    50% { transform: scale(1.1); }
+    100% { transform: scale(1); opacity: 1; }
+}
+
+.achievement-popup-icon {
+    font-size: 80px;
+    margin-bottom: 20px;
+    animation: achievementRotate 2s ease-in-out infinite;
+}
+
+@keyframes achievementRotate {
+    0%, 100% { transform: rotate(0deg); }
+    25% { transform: rotate(-10deg); }
+    75% { transform: rotate(10deg); }
+}
+
+.achievement-popup-title {
+    font-size: 28px;
+    font-weight: bold;
+    color: #d4af37;
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
+    margin-bottom: 15px;
+}
+
+.achievement-popup-name {
+    font-size: 32px;
+    font-weight: bold;
+    color: var(--text-ink);
+    margin-bottom: 10px;
+}
+
+.achievement-popup-desc {
+    font-size: 18px;
+    color: #5d4037;
+    margin-bottom: 30px;
+}
+
+.achievement-popup-btn {
+    background: linear-gradient(to bottom, #d4af37, #b8941f);
+    border: 3px solid #8b6f1f;
+    border-radius: 8px;
+    padding: 12px 40px;
+    font-size: 18px;
+    font-weight: bold;
+    color: #fff;
+    cursor: pointer;
+    font-family: inherit;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+    transition: all 0.2s;
+}
+
+.achievement-popup-btn:hover {
+    background: linear-gradient(to bottom, #e5c547, #d4af37);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 12px rgba(0, 0, 0, 0.4);
+}
+
+#achievements-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.achievement-item {
+    background: linear-gradient(to bottom, #6d4c41, #5d4037);
+    border: 2px solid #4e342e;
+    border-radius: 8px;
+    padding: 10px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    transition: all 0.2s;
+}
+
+.achievement-item.unlocked {
+    background: linear-gradient(to bottom, #8d6e63, #6d4c41);
+    border-color: #d4af37;
+    box-shadow: 0 0 10px rgba(212, 175, 55, 0.3);
+}
+
+.achievement-icon {
+    font-size: 32px;
+    width: 40px;
+    text-align: center;
+    flex-shrink: 0;
+}
+
+.achievement-info {
+    flex: 1;
+}
+
+.achievement-name {
+    font-size: 16px;
+    font-weight: bold;
+    color: var(--parchment);
+    margin-bottom: 4px;
+}
+
+.achievement-item.unlocked .achievement-name {
+    color: #ffd700;
+}
+
+.achievement-desc {
+    font-size: 13px;
+    color: #c8b495;
+    margin-bottom: 4px;
+}
+
+.achievement-progress {
+    font-size: 12px;
+    color: #8d6e63;
+    font-weight: bold;
+}

@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>饥荒：黄金时代 (V7.0)</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="assets/icons.css">
+    <link rel="stylesheet" href="assets/weather.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div id="game-wrapper">
+        <canvas id="gameCanvas"></canvas>
+        
+        <!-- 天气效果层 -->
+        <div id="weather-overlay" class="weather-overlay"></div>
+        
+        <div id="ui-layer">
+            <!-- 时间面板 - 顶部左侧 -->
+            <div id="time-panel">
+                <div class="time-panel-row">
+                    <div id="clock-container">
+                        <div id="clock-rim"></div>
+                        <div id="clock-face"></div>
+                        <div id="clock-arrow"></div>
+                    </div>
+                    <div id="day-counter">第 1 天</div>
+                    <!-- 天气信息 - 时钟右边 -->
+                    <div id="weather-info" style="display: none;">
+                        <span id="weather-icon" class="weather-icon"></span>
+                        <span id="weather-text"></span>
+                    </div>
+                </div>
+                <div id="weather-effects"></div>
+            </div>
+            
+            <!-- 基地指引UI - 右上角 -->
+            <div id="base-compass" style="display: none;">
+                <div id="compass-arrow"></div>
+                <div id="base-distance">--</div>
+            </div>
+
+            <div id="stats-panel" class="parchment-panel">
+                <div class="stat-row">
+                    <span class="stat-icon game-icon icon-health"></span>
+                    <div class="bar-frame"><div id="bar-health" class="bar-fill health-fill"></div></div>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-icon game-icon icon-hunger"></span>
+                    <div class="bar-frame"><div id="bar-hunger" class="bar-fill hunger-fill"></div></div>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-icon game-icon icon-sanity"></span>
+                    <div class="bar-frame"><div id="bar-sanity" class="bar-fill sanity-fill"></div></div>
+                </div>
+            </div>
+
+            <div id="crafting-panel" class="parchment-panel" style="display: none;">
+                <div class="panel-header">生存制作 (H) <button class="panel-toggle" onclick="game.toggleCraftPanel()">✕</button></div>
+                <button class="craft-btn" id="craft-axe" onclick="game.craft('axe')">
+                    <div class="btn-icon game-icon icon-axe"></div>
+                    <div class="btn-info"><b>斧头</b><span>树枝x2, 燧石x2 | 耐久: <span id="tool-axe-durability">0</span></span></div>
+                </button>
+                <button class="craft-btn" id="craft-pickaxe" onclick="game.craft('pickaxe')">
+                    <div class="btn-icon game-icon icon-pickaxe"></div>
+                    <div class="btn-info"><b>矿镐</b><span>树枝x2, 燧石x2 | 耐久: <span id="tool-pickaxe-durability">0</span></span></div>
+                </button>
+                <button class="craft-btn" id="craft-spear" onclick="game.craft('spear')">
+                    <div class="btn-icon game-icon icon-spear"></div>
+                    <div class="btn-info"><b>长矛</b><span>木材x1, 金块x1 | 耐久: <span id="tool-spear-durability">0</span></span></div>
+                </button>
+                <button class="craft-btn" id="craft-tower" onclick="game.craft('tower')">
+                    <div class="btn-icon game-icon icon-tower"></div>
+                    <div class="btn-info"><b>防御塔</b><span>木材x8, 石头x6, 金块x2</span></div>
+                </button>
+                <button class="craft-btn" id="craft-fire" onclick="game.craft('campfire')">
+                    <div class="btn-icon game-icon icon-campfire"></div>
+                    <div class="btn-info"><b>营火</b><span>木材x3, 石头x2</span></div>
+                </button>
+                <button class="craft-btn" id="craft-bed" onclick="game.craft('bed')">
+                    <div class="btn-icon">🛏️</div>
+                    <div class="btn-info"><b>床</b><span>木材x6, 干草x8</span></div>
+                </button>
+                <button class="craft-btn" id="craft-beacon" onclick="game.craft('beacon')">
+                    <div class="btn-icon">🗼</div>
+                    <div class="btn-info"><b>灯塔</b><span>石头x10, 金块x5</span></div>
+                </button>
+            </div>
+
+            <!-- 背包界面 -->
+            <div id="inventory-panel" class="parchment-panel" style="display: none;">
+                <div class="panel-header">背包 (E) <button class="panel-toggle" onclick="game.toggleInventory()">✕</button></div>
+                
+                <div class="inventory-section">
+                    <div class="section-title">📦 材料</div>
+                    <div class="inventory-grid">
+                        <div class="inventory-item">
+                            <div class="game-icon icon-twig"></div>
+                            <div class="item-name">树枝</div>
+                            <div class="item-count" id="inv-twig">0</div>
+                        </div>
+                        <div class="inventory-item">
+                            <div class="game-icon icon-grass"></div>
+                            <div class="item-name">干草</div>
+                            <div class="item-count" id="inv-grass">0</div>
+                        </div>
+                        <div class="inventory-item">
+                            <div class="game-icon icon-flint"></div>
+                            <div class="item-name">燧石</div>
+                            <div class="item-count" id="inv-flint">0</div>
+                        </div>
+                        <div class="inventory-item">
+                            <div class="game-icon icon-wood"></div>
+                            <div class="item-name">木材</div>
+                            <div class="item-count" id="inv-wood">0</div>
+                        </div>
+                        <div class="inventory-item">
+                            <div class="game-icon icon-stone"></div>
+                            <div class="item-name">石头</div>
+                            <div class="item-count" id="inv-stone">0</div>
+                        </div>
+                        <div class="inventory-item">
+                            <div class="game-icon icon-gold"></div>
+                            <div class="item-name">金块</div>
+                            <div class="item-count" id="inv-gold">0</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="inventory-section">
+                    <div class="section-title">🍖 食物</div>
+                    <div class="food-grid">
+                        <button class="food-item-btn" id="eat-berry" onclick="game.eat('berry')">
+                            <div class="game-icon icon-berry"></div>
+                            <div class="item-name">浆果</div>
+                            <div class="item-count" id="inv-berry">0</div>
+                            <div class="food-effect">+10🍗 +2❤️</div>
+                        </button>
+                        <button class="food-item-btn" id="eat-meat" onclick="game.eat('meat')">
+                            <div class="game-icon icon-meat"></div>
+                            <div class="item-name">小肉</div>
+                            <div class="item-count" id="inv-meat">0</div>
+                            <div class="food-effect">+25🍗 +5❤️ +5🧠</div>
+                        </button>
+                        <button class="food-item-btn" id="eat-bigmeat" onclick="game.eat('bigmeat')">
+                            <div class="game-icon icon-bigmeat"></div>
+                            <div class="item-name">大肉</div>
+                            <div class="item-count" id="inv-bigmeat">0</div>
+                            <div class="food-effect">+50🍗 +50❤️ +50🧠</div>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="inventory-section">
+                    <div class="section-title">🌱 种植</div>
+                    <button class="action-btn" id="action-plant" onclick="game.plantSapling()">
+                        <div class="game-icon icon-sapling"></div>
+                        <div class="action-info">
+                            <div class="item-name">种植松果</div>
+                            <div class="item-count">拥有: <span id="inv-pinecone">0</span></div>
+                        </div>
+                    </button>
+                </div>
+            </div>
+            <!-- 成就面板 -->
+            <div id="achievements-panel" class="parchment-panel" style="display: none;">
+                <div class="panel-header">成就系统 (T) <button class="panel-toggle" onclick="game.toggleAchievements()">✕</button></div>
+                <div id="achievements-list"></div>
+            </div>
+            
+            <!-- 成就弹窗 -->
+            <div id="achievement-popup" style="display: none;">
+                <div class="achievement-popup-content">
+                    <div class="achievement-popup-icon">🏆</div>
+                    <div class="achievement-popup-title">成就解锁！</div>
+                    <div class="achievement-popup-name" id="achievement-popup-name"></div>
+                    <div class="achievement-popup-desc" id="achievement-popup-desc"></div>
+                    <button class="achievement-popup-btn" onclick="game.closeAchievementPopup()">关闭</button>
+                </div>
+            </div>
+            
+            <div id="message-log"></div>
+            <div id="controls-panel">
+                <div style="margin-bottom:5px;">WASD 移动 | E 背包 | H 制作 | T 成就 | 鼠标点击交互</div>
+                <button onclick="game.saveGame()">保存</button>
+                <button onclick="game.clearSave()" style="color:#8b0000">重置</button>
+            </div>
+        </div>
+    </div>
+    <script src="game.js"></script>
+</body>
+</html>
