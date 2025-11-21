@@ -4,7 +4,29 @@
  * 2. 新资源：金块 (挖矿获取)
  * 3. 新武器：长矛 (高伤害)
  * 4. 种植系统：松果 -> 树苗 -> 树
+ * 5. 生物群系系统：基于噪声的地形生成
  */
+
+// --- 噪声工具类：用于生成生物群系 ---
+const Noise = {
+    seed: Math.random() * 1000, // 随机种子，保证每次游戏不同
+    
+    // 简单的伪随机噪声函数 (返回 0 到 1)
+    get: function(x, y) {
+        const n = x * 12.9898 + y * 78.233 + this.seed;
+        return (Math.sin(n) * 43758.5453) - Math.floor(Math.sin(n) * 43758.5453);
+    },
+    
+    // 平滑噪声 (核心) - 返回近似 -1 到 1 的值
+    // 使用正弦波模拟平滑过渡效果，产生"连片"的地形感
+    smooth: function(x, y) {
+        // 频率系数 0.1 决定了地形变化的快慢，越小变化越平缓
+        // 使用不同的频率组合，产生更自然的地形
+        const value1 = Math.sin(x * 0.08 + this.seed * 10) * Math.cos(y * 0.08 + this.seed * 20);
+        const value2 = Math.sin(x * 0.15 + this.seed * 30) * Math.cos(y * 0.12 + this.seed * 40) * 0.5;
+        return (value1 + value2) / 1.5; // 归一化到 -1 到 1
+    }
+};
 
 const TILE_SIZE = 50;
 const WORLD_SIZE = 60; // 初始世界大小（已废弃，改用无限世界）
@@ -13,11 +35,16 @@ const ZOOM_SCALE = 1.5; // 整体缩放因子，放大1.5倍
 const DAY_LENGTH = 7200; // 120秒一天（增加白天时间）
 
 const COLORS = {
-    ground: '#2d3a25',
+    ground: '#2d3a25', // 默认草原色
     ground_boss: '#2c0e0e',
     grass: '#7cb342',
     gold: '#ffd700',
-    grid: 'rgba(255, 255, 255, 0.08)'
+    grid: 'rgba(255, 255, 255, 0.08)',
+    // 生物群系背景色
+    biome_forest: '#1b5e20', // 森林：深绿色
+    biome_rocky: '#3e2723', // 矿区：深褐色
+    biome_grassland: '#2d3a25', // 草原：默认色
+    biome_badlands: '#4a2c2a' // 荒地：暗红色
 };
 
 class Game {
@@ -36,6 +63,10 @@ class Game {
         this.weatherParticles = [];
         this.bloodParticles = []; // 新增：血滴粒子系统
         this.windParticles = []; // 新增：突进风粒子系统
+        this.woodChipParticles = []; // 新增：木屑粒子系统
+        this.dustParticles = []; // 新增：尘土粒子系统
+        this.buildParticles = []; // 新增：建造完成粒子系统（星星/烟雾）
+        this.stoneChipParticles = []; // 新增：石头碎片粒子系统
         
         // 图片资源
         this.images = {};
@@ -61,13 +92,15 @@ class Game {
                     pickaxe: false, 
                     spear: false,
                     bow: false,  // 新增：弓箭
+                    rod: false,  // 新增：鱼竿
                     // 新增护甲状态
                     armor: false,       
                     armorDurability: 0,
                     axeDurability: 0,  // 工具耐久度
                     pickaxeDurability: 0,
                     spearDurability: 0,
-                    bowDurability: 0  // 弓箭耐久度
+                    bowDurability: 0,  // 弓箭耐久度
+                    rodDurability: 0   // 鱼竿耐久度
                 },
                 dir: 1,
                 isPaused: false,  // 游戏暂停状态
@@ -89,6 +122,14 @@ class Game {
             chunks: {}, // 已生成的区块 { "chunkX,chunkY": true }
             spiderPoisonTimer: 0, // 蜘蛛中毒debuff计时器（300帧=5秒）
             lastKilledByBow: false, // 最后是否用弓箭击杀
+            currentBiome: 'grassland', // 当前生物群系：grassland, forest, rocky, badlands
+            currentBiomeValue: 0, // 当前群系值（用于颜色插值）
+            isResting: false, // 是否正在休息
+            restProgress: 0, // 休息动画进度（0-1）
+            campfireHealTimer: 0, // 营火回血计时器
+            isFishing: false, // 是否正在钓鱼
+            fishingTimer: 0, // 钓鱼计时器（240帧=4秒）
+            fishingTarget: null, // 钓鱼目标（鱼塘实体）
             weather: {
                 type: 'clear', // clear, rain, fog, snow, thunderstorm
                 duration: 0,
@@ -296,10 +337,29 @@ class Game {
         }
 
         let target = null;
-        let minDist = 50;
+        let minDist = Infinity;
         this.state.entities.forEach((e, index) => {
+            // 为不同类型实体设置不同的点击检测范围
+            let clickRadius = 50; // 默认检测范围
+            if (e.type === 'pond') {
+                // 鱼塘使用基于大小的检测范围（比实际大小稍大）
+                const pondW = e.pondWidth || 5;
+                const pondH = e.pondHeight || 5;
+                const pondSizeW = pondW * TILE_SIZE / 2;
+                const pondSizeH = pondH * TILE_SIZE / 2;
+                // 使用较大的尺寸作为检测半径，并增加20%的容差
+                clickRadius = Math.max(pondSizeW, pondSizeH) * 1.2;
+            } else if (e.type === 'tree') {
+                clickRadius = 60;
+            } else if (e.type === 'rock') {
+                clickRadius = 55;
+            }
+            
             const dist = Math.hypot(e.x - worldX, e.y - worldY);
-            if (dist < minDist) { target = { e, index }; minDist = dist; }
+            if (dist < clickRadius && dist < minDist) { 
+                target = { e, index }; 
+                minDist = dist; 
+            }
         });
 
         if (target) {
@@ -456,7 +516,7 @@ class Game {
         }
     }
     
-    // 生成区块资源
+    // 生成区块资源（基于生物群系）
     generateChunk(cx, cy) {
         // 每个区块生成一定数量的资源
         const baseX = cx * CHUNK_SIZE * TILE_SIZE;
@@ -466,23 +526,76 @@ class Game {
         const centerX = baseX + (CHUNK_SIZE * TILE_SIZE) / 2;
         const centerY = baseY + (CHUNK_SIZE * TILE_SIZE) / 2;
         
-        // 为每个区块生成资源（数量根据区块大小调整）
-        const resourcesPerChunk = {
-            tree: 8,
-            rock: 5,
-            bush: 4,
-            grass: 6,
-            flint: 3,
-            stick: 5,
-            rabbit: 1,
-            spider: 0.8, // 新增：每个区块0.8只蜘蛛（平均每个区块不到1只）
-            wolf: 0.5, // 每个区块0.5只狼（平均每两个区块一只）
-            sheep: 0.6 // 每个区块约0.6只绵羊
-        };
+        // 1. 获取当前区块的群系值 (-1 到 1)
+        // 使用 cx, cy 作为输入，保证相邻区块的值是接近的
+        const biomeValue = Noise.smooth(cx, cy);
         
-        // 在区块内生成资源
-        for (let type in resourcesPerChunk) {
-            const count = resourcesPerChunk[type];
+        // 2. 定义不同群系的资源配置
+        let resources = {};
+        let biomeName = "";
+        
+        // 根据值划分群系
+        if (biomeValue > 0.5) {
+            // --- 🪨 矿区 (值 > 0.5) ---
+            // 特点：石头极多，几乎无树，有狼
+            biomeName = "矿区";
+            resources = {
+                tree: 0,       // 没树
+                rock: 12,      // 大量石头
+                flint: 5,      // 大量燧石
+                stick: 1,      // 少量树枝
+                wolf: 0.8,     // 狼较多
+                spider: 0.5,   // 少量蜘蛛
+                rabbit: 0.2    // 几乎没有兔子
+            };
+        } else if (biomeValue < -0.3) {
+            // --- 🌲 密林 (值 < -0.3) ---
+            // 特点：全是树，有蜘蛛
+            biomeName = "密林";
+            resources = {
+                tree: 15,      // 极多树
+                stick: 6,       // 大量树枝
+                bush: 2,        // 少量浆果
+                spider: 1.5,   // 蜘蛛多
+                rock: 1,        // 几乎没有石头
+                flint: 0.5,     // 几乎没有燧石
+                rabbit: 0.3     // 少量兔子
+            };
+        } else if (biomeValue < -0.1) {
+            // --- 💀 荒地 (值 < -0.1 且 >= -0.3) ---
+            // 特点：资源稀少，全是怪物
+            biomeName = "荒地";
+            resources = {
+                tree: 1,        // 几乎没有树
+                rock: 1,        // 几乎没有石头
+                grass: 2,       // 少量草
+                bush: 1,        // 少量浆果
+                spider: 2,      // 大量蜘蛛
+                wolf: 1.2,      // 大量狼
+                rabbit: 0.1     // 几乎没有兔子
+            };
+        } else {
+            // --- 🌿 草原 (中间值) ---
+            // 特点：资源均衡，适合建家，兔子多
+            biomeName = "草原";
+            resources = {
+                tree: 3,        // 适量树
+                grass: 10,      // 大量草
+                bush: 6,        // 大量浆果
+                rabbit: 3,      // 兔子天堂
+                rock: 2,        // 适量石头
+                flint: 2,       // 适量燧石
+                stick: 4,       // 适量树枝
+                spider: 0.5,    // 少量蜘蛛
+                wolf: 0.3,      // 少量狼
+                sheep: 0.6,     // 适量绵羊
+                pond: 1.5       // 提高鱼塘生成：每个草原区块大约生成1-2个鱼塘
+            };
+        }
+        
+        // 3. 根据配置生成资源
+        for (let type in resources) {
+            const count = resources[type];
             // 对于小数（如0.5, 0.8），使用概率生成
             if (count < 1) {
                 if (Math.random() < count) {
@@ -552,7 +665,7 @@ class Game {
 
     spawnEntity(type, x, y) {
         // 所有实体都需要网格对齐，确保整齐排列
-        const needsGrid = ['campfire', 'tower', 'sapling', 'tree', 'rock', 'bush', 'flint', 'stick', 'grass', 'bed', 'beacon'];
+        const needsGrid = ['campfire', 'tower', 'sapling', 'tree', 'rock', 'bush', 'flint', 'stick', 'grass', 'bed', 'beacon', 'pond'];
         
         // 定义占用的格子大小（树木占2x2格）
         const gridSize = {
@@ -560,7 +673,8 @@ class Game {
             'tower': { width: 2, height: 3 }, // 防御塔也占2x2
             'campfire': { width: 1, height: 1 },
             'bed': { width: 2, height: 2 },
-            'beacon': { width: 2, height: 3 } // 灯塔占2x2格
+            'beacon': { width: 2, height: 3 }, // 灯塔占2x2格
+            'pond': { width: 5 + Math.floor(Math.random() * 3), height: 5 + Math.floor(Math.random() * 3) } // 鱼塘：5-7格随机大小
         };
         
         const size = gridSize[type] || { width: 1, height: 1 };
@@ -637,8 +751,9 @@ class Game {
         if(type === 'tower') hp = 350;
         if(type === 'spider') hp = 20; // 蜘蛛血量：两击死亡（工具10伤害×2，弓箭25伤害只需1击，长矛30伤害只需1击）
         if(type === 'sheep') hp = 50;
+        if(type === 'pond') hp = -1; // 鱼塘没有血量概念，设置为-1表示不可被攻击
 
-        this.state.entities.push({
+        const entity = {
             type: type, x: x, y: y, 
             life: hp, maxLife: hp,
             id: Math.random().toString(36).slice(2, 11),
@@ -650,7 +765,16 @@ class Game {
             atk: type==='tower'?35:undefined,
             cooldown: 0,
             vx: 0, vy: 0, damage: 0, ttl: 0
-        });
+        };
+        
+        // 如果是鱼塘，保存其占用的格子大小和噪声参数
+        if (type === 'pond') {
+            entity.pondWidth = gridSize[type].width;
+            entity.pondHeight = gridSize[type].height;
+            entity.pondNoiseSeed = Math.random() * 1000; // 噪声种子，用于生成轮廓
+        }
+        
+        this.state.entities.push(entity);
         
         return true; // 成功生成，返回true
     }
@@ -666,6 +790,8 @@ class Game {
         if (this.state.player.isPaused) return;
         
         const p = this.state.player;
+        const inv = p.inventory;   // 供钓鱼等逻辑使用
+        const tools = p.tools;     // 供钓鱼等逻辑使用
         let speed = 5;
         let moved = false;
 
@@ -765,12 +891,140 @@ class Game {
         if (this.keys['KeyA'] || this.keys['ArrowLeft']) { p.x -= speed; p.dir = -1; moved = true; }
         if (this.keys['KeyD'] || this.keys['ArrowRight']) { p.x += speed; p.dir = 1; moved = true; }
         
+        // 新增：走路时创建尘土粒子（降低频率，避免过多粒子）
+        if (moved && Math.random() > 0.85) { // 15%的几率创建尘土粒子
+            this.createDustEffect(p.x, p.y);
+        }
+        
         // 动态加载区块
         this.loadChunksAroundPlayer();
+        
+        // 更新当前生物群系（用于背景色变化）
+        const pChunkX = Math.floor(p.x / (CHUNK_SIZE * TILE_SIZE));
+        const pChunkY = Math.floor(p.y / (CHUNK_SIZE * TILE_SIZE));
+        const currentBiomeVal = Noise.smooth(pChunkX, pChunkY);
+        this.state.currentBiomeValue = currentBiomeVal;
+        
+        // 根据群系值确定群系类型
+        if (currentBiomeVal > 0.5) {
+            this.state.currentBiome = 'rocky';
+        } else if (currentBiomeVal < -0.3) {
+            this.state.currentBiome = 'forest';
+        } else if (currentBiomeVal < -0.1) {
+            this.state.currentBiome = 'badlands';
+        } else {
+            this.state.currentBiome = 'grassland';
+        }
 
         this.state.camera.x = p.x - this.width / 2;
         this.state.camera.y = p.y - this.height / 2;
 
+        // 处理休息逻辑
+        if (this.state.isResting) {
+            this.state.restProgress += 0.01; // 每帧增加1%，100帧完成（约1.7秒）- 增加动画时长
+            if (this.state.restProgress >= 1) {
+                // 休息完成
+                this.state.isResting = false;
+                this.state.restProgress = 0;
+                
+                // 消耗大量饱食度（消耗60点）
+                p.hunger = Math.max(0, p.hunger - 60);
+                
+                // 天数+1
+                this.state.day++;
+                
+                // 跳跃到第二天刚开始的时候（时间设为0，完全从第二天开始）
+                this.state.time = 0;
+                
+                // 恢复一些生命值和理智值
+                p.health = Math.min(100, p.health + 30);
+                p.sanity = Math.min(100, p.sanity + 20);
+                
+                this.log(`休息完成！跳到第 ${this.state.day} 天早上。生命+30，理智+20，饱食度-60`, false);
+                this.renderInventory();
+            }
+        }
+        
+        // 营火缓慢恢复生命（在营火附近时）
+        const nearCampfire = this.state.entities.find(e => 
+            e.type === 'campfire' && 
+            e.life > 0 && 
+            Math.hypot(e.x - p.x, e.y - p.y) < 150 // 150像素范围内
+        );
+        if (nearCampfire && p.health < 100) {
+            // 每60帧（1秒）恢复1点生命，使用帧计数器避免时间跳跃问题
+            if (!this.state.campfireHealTimer) this.state.campfireHealTimer = 0;
+            this.state.campfireHealTimer++;
+            if (this.state.campfireHealTimer >= 60) {
+                p.health = Math.min(100, p.health + 1);
+                this.state.campfireHealTimer = 0;
+            }
+        } else {
+            // 不在营火附近时重置计时器
+            this.state.campfireHealTimer = 0;
+        }
+        
+        // 处理钓鱼逻辑
+        if (this.state.isFishing) {
+            this.state.fishingTimer++;
+            
+            // 如果钓鱼目标不存在，自动取消钓鱼（防止卡死）
+            if (!this.state.fishingTarget) {
+                this.state.isFishing = false;
+                this.state.fishingTimer = 0;
+                this.log("钓鱼目标消失，钓鱼中断！", true);
+            } else {
+                // 验证钓鱼目标是否还在实体列表中（防止引用失效导致卡死）
+                const targetExists = this.state.entities.some(e => e === this.state.fishingTarget);
+                if (!targetExists || this.state.fishingTarget.type !== 'pond') {
+                    this.state.isFishing = false;
+                    this.state.fishingTimer = 0;
+                    this.state.fishingTarget = null;
+                    this.log("钓鱼目标消失，钓鱼中断！", true);
+                } else {
+                    // 检查是否还在鱼塘附近（距离超过150像素则取消钓鱼）
+                    const dist = Math.hypot(p.x - this.state.fishingTarget.x, p.y - this.state.fishingTarget.y);
+                    if (dist > 150) {
+                        this.state.isFishing = false;
+                        this.state.fishingTimer = 0;
+                        this.state.fishingTarget = null;
+                        this.log("距离太远，钓鱼中断！", true);
+                    } else {
+                        // 4秒 = 240帧（60fps）
+                        if (this.state.fishingTimer >= 240) {
+                            // 钓鱼完成，有70%成功率
+                            this.state.isFishing = false;
+                            this.state.fishingTimer = 0;
+                            
+                            if (!tools.rod || tools.rodDurability <= 0) {
+                                this.log("鱼竿已损坏！", true);
+                                this.state.fishingTarget = null;
+                            } else {
+                                // 消耗鱼竿耐久
+                                tools.rodDurability--;
+                                if (tools.rodDurability <= 0) {
+                                    tools.rod = false;
+                                    this.log("鱼竿损坏了！", true);
+                                }
+                                
+                                if (Math.random() < 0.7) {
+                                    // 成功：获得鱼肉，不减少理智
+                                    inv.meat += 1;
+                                    this.log("钓鱼成功！获得小肉x1", false);
+                                    this.renderInventory();
+                                } else {
+                                    // 失败
+                                    this.log("鱼跑了...", true);
+                                }
+                            }
+                            
+                            this.state.fishingTarget = null;
+                        }
+                    }
+                }
+            }
+        }
+        
         // 游戏逻辑继续运行，即使面板打开（只有成就弹窗会完全暂停）
         this.state.time++;
         
@@ -1282,6 +1536,18 @@ class Game {
         
         // 更新风粒子
         this.updateWindParticles();
+        
+        // 更新木屑粒子
+        this.updateWoodChipParticles();
+        
+        // 更新尘土粒子
+        this.updateDustParticles();
+        
+        // 更新建造完成粒子
+        this.updateBuildParticles();
+        
+        // 更新石头碎片粒子
+        this.updateStoneChipParticles();
 
         this.updateUI();
     }
@@ -1298,7 +1564,7 @@ class Game {
                 vy: (Math.random() - 0.5) * 3 - 1, // 向上飞溅
                 life: 30 + Math.floor(Math.random() * 20), // 30-50帧生命周期
                 maxLife: 30 + Math.floor(Math.random() * 20),
-                size: 3 + Math.random() * 3 // 3-6像素大小
+                size: 4 + Math.random() * 4 // 4-8像素大小（增强可见度）
             });
         }
     }
@@ -1321,7 +1587,7 @@ class Game {
     // --- 新增：创建风粒子效果 ---
     createWindEffect(x, y, dirX, dirY) {
         // 在玩家身后创建风粒子
-        const particleCount = 8;
+        const particleCount = 10; // 增加粒子数量
         for (let i = 0; i < particleCount; i++) {
             const angle = Math.atan2(dirY, dirX) + (Math.random() - 0.5) * 0.8; // 稍微随机角度
             const speed = 2 + Math.random() * 3;
@@ -1335,8 +1601,8 @@ class Game {
                 vy: Math.sin(angle) * speed,
                 life: 15 + Math.floor(Math.random() * 10), // 15-25帧生命周期
                 maxLife: 15 + Math.floor(Math.random() * 10),
-                size: 2 + Math.random() * 3, // 2-5像素大小
-                alpha: 0.6 + Math.random() * 0.4 // 0.6-1.0透明度
+                size: 3 + Math.random() * 4, // 3-7像素大小（增强可见度）
+                alpha: 0.7 + Math.random() * 0.3 // 0.7-1.0透明度（增强可见度）
             });
         }
     }
@@ -1353,6 +1619,186 @@ class Game {
             
             if (p.life <= 0) {
                 this.windParticles.splice(i, 1);
+            }
+        }
+    }
+    
+    // --- 新增：创建木屑粒子效果 ---
+    createWoodChipEffect(x, y) {
+        // 创建8-12个木屑粒子
+        const count = 8 + Math.floor(Math.random() * 5);
+        for (let i = 0; i < count; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const speed = 2 + Math.random() * 4;
+            this.woodChipParticles.push({
+                x: x + (Math.random() - 0.5) * 15,
+                y: y + (Math.random() - 0.5) * 15,
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed - 1, // 稍微向上飞溅
+                life: 25 + Math.floor(Math.random() * 15), // 25-40帧生命周期
+                maxLife: 25 + Math.floor(Math.random() * 15),
+                size: 3 + Math.random() * 4, // 3-7像素大小（增强可见度）
+                rotation: Math.random() * Math.PI * 2, // 旋转角度
+                rotationSpeed: (Math.random() - 0.5) * 0.3 // 旋转速度
+            });
+        }
+    }
+    
+    // --- 新增：更新木屑粒子 ---
+    updateWoodChipParticles() {
+        for (let i = this.woodChipParticles.length - 1; i >= 0; i--) {
+            const p = this.woodChipParticles[i];
+            p.x += p.vx;
+            p.y += p.vy;
+            p.vy += 0.15; // 重力效果
+            p.vx *= 0.98; // 空气阻力
+            p.rotation += p.rotationSpeed; // 旋转
+            p.life--;
+            
+            if (p.life <= 0) {
+                this.woodChipParticles.splice(i, 1);
+            }
+        }
+    }
+    
+    // --- 新增：创建尘土粒子效果 ---
+    createDustEffect(x, y) {
+        // 创建4-6个尘土粒子（走路时少量产生，增加数量）
+        const count = 4 + Math.floor(Math.random() * 3);
+        for (let i = 0; i < count; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const speed = 0.5 + Math.random() * 1.5;
+            this.dustParticles.push({
+                x: x + (Math.random() - 0.5) * 20,
+                y: y + (Math.random() - 0.5) * 20,
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed - 0.5, // 向上飘散
+                life: 20 + Math.floor(Math.random() * 15), // 20-35帧生命周期
+                maxLife: 20 + Math.floor(Math.random() * 15),
+                size: 2.5 + Math.random() * 3.5, // 2.5-6像素大小（增强可见度）
+                alpha: 0.6 + Math.random() * 0.4 // 0.6-1.0透明度（增强可见度）
+            });
+        }
+    }
+    
+    // --- 新增：更新尘土粒子 ---
+    updateDustParticles() {
+        for (let i = this.dustParticles.length - 1; i >= 0; i--) {
+            const p = this.dustParticles[i];
+            p.x += p.vx;
+            p.y += p.vy;
+            p.vy -= 0.05; // 轻微上升
+            p.vx *= 0.96; // 逐渐减速
+            p.vy *= 0.96;
+            p.life--;
+            
+            if (p.life <= 0) {
+                this.dustParticles.splice(i, 1);
+            }
+        }
+    }
+    
+    // --- 新增：创建建造完成粒子效果 ---
+    createBuildEffect(x, y, type = 'star') {
+        // type: 'star' 或 'smoke'
+        if (type === 'star') {
+            // 创建星星粒子效果
+            const count = 15 + Math.floor(Math.random() * 10); // 增加粒子数量
+            for (let i = 0; i < count; i++) {
+                const angle = (Math.PI * 2 / count) * i + Math.random() * 0.3;
+                const speed = 1.5 + Math.random() * 2.5;
+                this.buildParticles.push({
+                    x: x,
+                    y: y,
+                    vx: Math.cos(angle) * speed,
+                    vy: Math.sin(angle) * speed - 1, // 向上飞散
+                    life: 30 + Math.floor(Math.random() * 20), // 30-50帧生命周期
+                    maxLife: 30 + Math.floor(Math.random() * 20),
+                    size: 3 + Math.random() * 4, // 3-7像素大小（增强可见度）
+                    type: 'star',
+                    alpha: 0.9 + Math.random() * 0.1 // 0.9-1.0透明度（增强可见度）
+                });
+            }
+        } else if (type === 'smoke') {
+            // 创建烟雾粒子效果
+            const count = 18 + Math.floor(Math.random() * 12); // 增加粒子数量
+            for (let i = 0; i < count; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const speed = 0.8 + Math.random() * 1.5;
+                this.buildParticles.push({
+                    x: x + (Math.random() - 0.5) * 10,
+                    y: y + (Math.random() - 0.5) * 10,
+                    vx: Math.cos(angle) * speed,
+                    vy: Math.sin(angle) * speed - 1.5, // 向上飘散
+                    life: 40 + Math.floor(Math.random() * 20), // 40-60帧生命周期
+                    maxLife: 40 + Math.floor(Math.random() * 20),
+                    size: 4 + Math.random() * 5, // 4-9像素大小（增强可见度）
+                    type: 'smoke',
+                    alpha: 0.5 + Math.random() * 0.4 // 0.5-0.9透明度（增强可见度）
+                });
+            }
+        }
+    }
+    
+    // --- 新增：更新建造完成粒子 ---
+    updateBuildParticles() {
+        for (let i = this.buildParticles.length - 1; i >= 0; i--) {
+            const p = this.buildParticles[i];
+            p.x += p.vx;
+            p.y += p.vy;
+            
+            if (p.type === 'star') {
+                p.vy += 0.1; // 星星有轻微重力
+                p.vx *= 0.97;
+                p.vy *= 0.97;
+            } else if (p.type === 'smoke') {
+                p.vy -= 0.03; // 烟雾持续上升
+                p.vx *= 0.98;
+                p.size += 0.1; // 烟雾逐渐变大
+            }
+            
+            p.life--;
+            
+            if (p.life <= 0) {
+                this.buildParticles.splice(i, 1);
+            }
+        }
+    }
+    
+    // --- 新增：创建石头碎片粒子效果 ---
+    createStoneChipEffect(x, y) {
+        // 创建8-12个石头碎片粒子
+        const count = 8 + Math.floor(Math.random() * 5);
+        for (let i = 0; i < count; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const speed = 2.5 + Math.random() * 4.5;
+            this.stoneChipParticles.push({
+                x: x + (Math.random() - 0.5) * 15,
+                y: y + (Math.random() - 0.5) * 15,
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed - 1, // 稍微向上飞溅
+                life: 25 + Math.floor(Math.random() * 15), // 25-40帧生命周期
+                maxLife: 25 + Math.floor(Math.random() * 15),
+                size: 2.5 + Math.random() * 3.5, // 2.5-6像素大小（增强可见度）
+                rotation: Math.random() * Math.PI * 2, // 旋转角度
+                rotationSpeed: (Math.random() - 0.5) * 0.3 // 旋转速度
+            });
+        }
+    }
+    
+    // --- 新增：更新石头碎片粒子 ---
+    updateStoneChipParticles() {
+        for (let i = this.stoneChipParticles.length - 1; i >= 0; i--) {
+            const p = this.stoneChipParticles[i];
+            p.x += p.vx;
+            p.y += p.vy;
+            p.vy += 0.18; // 重力效果
+            p.vx *= 0.98; // 空气阻力
+            p.rotation += p.rotationSpeed; // 旋转
+            p.life--;
+            
+            if (p.life <= 0) {
+                this.stoneChipParticles.splice(i, 1);
             }
         }
     }
@@ -1456,8 +1902,8 @@ class Game {
         let damage = 5;
         let toolUsed = null;
         
-        // 如果是火堆、床、灯塔等可交互建筑，不需要武器，直接处理
-        if (entity.type === 'campfire' || entity.type === 'bed' || entity.type === 'beacon' || entity.type === 'tower') {
+        // 如果是火堆、床、灯塔、鱼塘等可交互建筑，不需要武器，直接处理
+        if (entity.type === 'campfire' || entity.type === 'bed' || entity.type === 'beacon' || entity.type === 'tower' || entity.type === 'pond') {
             // 这些建筑不需要武器，直接处理
         } else if (tools.spear && tools.spearDurability > 0) {
             damage = 30;
@@ -1752,7 +2198,9 @@ class Game {
                     const sanityPenalty = (40 - p.sanity) / 40;
                     treeDamage = Math.floor(25 * (1 - sanityPenalty * 0.3)); // 最多降低30%效率
                 }
-                entity.life -= treeDamage; 
+                entity.life -= treeDamage;
+                // 新增：创建木屑粒子效果
+                this.createWoodChipEffect(entity.x, entity.y); 
                 if(entity.life <= 0) { 
                     const treeGrid = this.worldToGrid(entity.x, entity.y);
                     this.freeGrid(treeGrid.gx, treeGrid.gy);
@@ -1781,6 +2229,8 @@ class Game {
                     rockDamage = Math.floor(25 * (1 - sanityPenalty * 0.3)); // 最多降低30%效率
                 }
                 entity.life -= rockDamage;
+                // 新增：创建石头碎片粒子效果
+                this.createStoneChipEffect(entity.x, entity.y);
                 if(entity.life <= 0) { 
                     const rockGrid = this.worldToGrid(entity.x, entity.y);
                     this.freeGrid(rockGrid.gx, rockGrid.gy);
@@ -1810,6 +2260,48 @@ class Game {
                 else if (inv.grass > 0) { entity.life = Math.min(100, entity.life+15); inv.grass--; this.log("添加燃料(干草)"); }
                 else if (inv.twig > 0) { entity.life = Math.min(100, entity.life+10); inv.twig--; this.log("添加燃料(树枝)"); }
                 else this.log("没有燃料！");
+                break;
+            case 'bed':
+                // 床的休息功能
+                const cycle = this.getCycle();
+                if (this.state.isResting) {
+                    this.log("正在休息中...", true);
+                    return;
+                }
+                if (cycle === 'day') {
+                    this.log("只能在黄昏或晚上休息！", true);
+                    return;
+                }
+                // 检查是否有特殊事件（如血月）
+                if (this.state.isBloodMoon) {
+                    this.log("血月之夜无法休息！危险正在逼近...", true);
+                    return;
+                }
+                // 检查饱食度（需要至少50点饱食度）
+                if (p.hunger < 50) {
+                    this.log("饱食度不足！需要至少50点饱食度才能休息。", true);
+                    return;
+                }
+                // 开始休息
+                this.state.isResting = true;
+                this.state.restProgress = 0;
+                this.log("开始休息...", false);
+                break;
+            case 'pond':
+                // 鱼塘的钓鱼功能
+                if (this.state.isFishing) {
+                    this.log("正在钓鱼中...", true);
+                    return;
+                }
+                if (!tools.rod || tools.rodDurability <= 0) {
+                    this.log("需要鱼竿才能钓鱼！", true);
+                    return;
+                }
+                // 开始钓鱼
+                this.state.isFishing = true;
+                this.state.fishingTimer = 0;
+                this.state.fishingTarget = entity;
+                this.log("开始钓鱼... (需要4秒)", false);
                 break;
         }
         this.renderInventory();
@@ -1872,6 +2364,17 @@ class Game {
                 this.log("材料不足: 木材x2, 蜘蛛丝x3");
             }
         }
+        else if (item === 'rod') {
+            if (inv.twig >= 2 && (inv.rope || 0) >= 1) {
+                inv.twig -= 2;
+                inv.rope -= 1;
+                tools.rod = true;
+                tools.rodDurability = 50; // 鱼竿耐久度50
+                this.log("制作: 鱼竿🎣 (耐久: 50)");
+            } else {
+                this.log("材料不足: 树枝x2, 绳索x1");
+            }
+        }
         else if (item === 'campfire') { 
             if (inv.wood >= 3 && inv.stone >= 2) { 
                 // 先尝试生成，成功后再扣除材料
@@ -1880,6 +2383,8 @@ class Game {
                     inv.wood -= 3; inv.stone -= 2; 
                     achievements.builtCampfires++;
                     this.checkAchievements();
+                    // 新增：创建建造完成粒子效果（星星）
+                    this.createBuildEffect(this.state.player.x + 50, this.state.player.y, 'star');
                     this.log("建造: 营火"); 
                 } else {
                     // 生成失败，位置被占用，材料不扣除
@@ -1897,6 +2402,8 @@ class Game {
                     inv.wood -= 8; inv.stone -= 6; inv.gold -= 2; 
                     achievements.builtTowers++;
                     this.checkAchievements();
+                    // 新增：创建建造完成粒子效果（星星）
+                    this.createBuildEffect(this.state.player.x + 60, this.state.player.y, 'star');
                     this.log("建造: 防御塔");
                 } else {
                     // 生成失败，位置被占用，材料不扣除
@@ -1916,6 +2423,8 @@ class Game {
                     this.state.baseX = this.state.player.x + 60;
                     this.state.baseY = this.state.player.y;
                     this.state.hasBase = true;
+                    // 新增：创建建造完成粒子效果（星星）
+                    this.createBuildEffect(this.state.player.x + 60, this.state.player.y, 'star');
                     this.log("建造: 床 🛏️ (基地标记)");
                 } else {
                     // 生成失败，位置被占用，材料不扣除
@@ -1937,6 +2446,8 @@ class Game {
                         this.state.baseY = this.state.player.y;
                         this.state.hasBase = true;
                     }
+                    // 新增：创建建造完成粒子效果（星星）
+                    this.createBuildEffect(this.state.player.x + 60, this.state.player.y, 'star');
                     this.log("建造: 灯塔 🗼 (基地指引)");
                 } else {
                     // 生成失败，位置被占用，材料不扣除
@@ -2048,7 +2559,32 @@ class Game {
     draw() {
         const ctx = this.ctx;
         const cam = this.state.camera;
-        ctx.fillStyle = this.state.isBloodMoon ? COLORS.ground_boss : COLORS.ground;
+        
+        // 根据生物群系和血月状态确定背景色
+        let groundColor = COLORS.ground; // 默认草原色
+        
+        if (this.state.isBloodMoon) {
+            groundColor = COLORS.ground_boss; // 血月时使用血月色
+        } else {
+            // 根据当前生物群系选择背景色
+            switch (this.state.currentBiome) {
+                case 'forest':
+                    groundColor = COLORS.biome_forest; // 森林：深绿色
+                    break;
+                case 'rocky':
+                    groundColor = COLORS.biome_rocky; // 矿区：深褐色
+                    break;
+                case 'badlands':
+                    groundColor = COLORS.biome_badlands; // 荒地：暗红色
+                    break;
+                case 'grassland':
+                default:
+                    groundColor = COLORS.biome_grassland; // 草原：默认色
+                    break;
+            }
+        }
+        
+        ctx.fillStyle = groundColor;
         ctx.fillRect(0, 0, this.width, this.height);
         
         // 绘制网格线
@@ -2237,6 +2773,79 @@ class Game {
                 ctx.fillRect(-28, -8, 56, 8); // 床单
                 ctx.font = '30px Segoe UI Emoji'; 
                 ctx.fillText('🛏️', 0, -5);
+            }
+            else if(e.type === 'pond') {
+                // 鱼塘的绘制（使用噪声生成轮廓）
+                const pondW = e.pondWidth || 3;
+                const pondH = e.pondHeight || 3;
+                const pondSize = TILE_SIZE; // 每个格子的大小
+                const baseW = pondW * pondSize / 2;
+                const baseH = pondH * pondSize / 2;
+                
+                // 使用噪声生成不规则轮廓
+                ctx.save();
+                ctx.beginPath();
+                
+                // 生成轮廓点（使用噪声）
+                const points = [];
+                const noiseStep = 0.1; // 噪声步长
+                const noiseScale = 0.15; // 噪声强度（15%的变化）
+                
+                // 生成四边的点
+                const sides = 32; // 轮廓分段数，越多越平滑
+                for (let i = 0; i <= sides; i++) {
+                    const angle = (i / sides) * Math.PI * 2;
+                    let radiusX = baseW;
+                    let radiusY = baseH;
+                    
+                    // 使用噪声调整半径
+                    const noiseX = Math.cos(angle) * radiusX;
+                    const noiseY = Math.sin(angle) * radiusY;
+                    const noiseValue = Noise.get((noiseX * noiseStep + e.pondNoiseSeed) / 100, (noiseY * noiseStep + e.pondNoiseSeed) / 100);
+                    const noiseOffset = (noiseValue - 0.5) * noiseScale; // -0.075 到 0.075
+                    
+                    radiusX *= (1 + noiseOffset);
+                    radiusY *= (1 + noiseOffset);
+                    
+                    const x = Math.cos(angle) * radiusX;
+                    const y = Math.sin(angle) * radiusY;
+                    
+                    if (i === 0) {
+                        ctx.moveTo(x, y);
+                    } else {
+                        ctx.lineTo(x, y);
+                    }
+                    points.push({x, y});
+                }
+                
+                ctx.closePath();
+                
+                // 绘制鱼塘（深蓝色/青色）
+                const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, Math.max(baseW, baseH));
+                gradient.addColorStop(0, 'rgba(0, 100, 150, 0.8)');
+                gradient.addColorStop(0.6, 'rgba(0, 80, 120, 0.6)');
+                gradient.addColorStop(1, 'rgba(0, 60, 100, 0.4)');
+                ctx.fillStyle = gradient;
+                ctx.fill();
+                
+                // 绘制边缘（深色边框）
+                ctx.strokeStyle = 'rgba(0, 50, 80, 0.8)';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+                
+                // 添加水面波纹效果
+                const time = Date.now() / 1000;
+                for (let i = 0; i < 3; i++) {
+                    const rippleRadius = (baseW * 0.3) + Math.sin(time * 2 + i) * (baseW * 0.1);
+                    const rippleAlpha = 0.2 + Math.sin(time * 3 + i * 2) * 0.1;
+                    ctx.beginPath();
+                    ctx.arc(0, 0, rippleRadius, 0, Math.PI * 2);
+                    ctx.strokeStyle = `rgba(150, 200, 255, ${rippleAlpha})`;
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                }
+                
+                ctx.restore();
             }
             else if(e.type === 'beacon') {
                 // 先绘制光柱效果（在图片下方，更激进更亮眼）
@@ -2439,7 +3048,44 @@ class Game {
         this.drawWeatherEffects();
         this.drawBloodParticles(cam);
         this.drawWindParticles(cam);
+        this.drawWoodChipParticles(cam);
+        this.drawDustParticles(cam);
+        this.drawBuildParticles(cam);
+        this.drawStoneChipParticles(cam);
         this.drawLighting(cam);
+        
+        // 绘制休息动画（全屏淡入淡出）
+        if (this.state.isResting) {
+            ctx.save();
+            // 计算透明度：从0到1再到0（淡入淡出）
+            let alpha = 0;
+            if (this.state.restProgress < 0.3) {
+                // 前30%：淡入（0到1）
+                alpha = this.state.restProgress / 0.3;
+            } else if (this.state.restProgress < 0.7) {
+                // 中间40%：保持全黑（1）
+                alpha = 1;
+            } else {
+                // 后30%：淡出（1到0）
+                alpha = (1 - this.state.restProgress) / 0.3;
+            }
+            
+            ctx.globalAlpha = alpha;
+            ctx.fillStyle = '#000000';
+            ctx.fillRect(0, 0, this.width, this.height);
+            
+            // 在中间显示"休息中..."文字
+            if (this.state.restProgress > 0.3 && this.state.restProgress < 0.7) {
+                ctx.globalAlpha = 1;
+                ctx.fillStyle = '#d7c6a3';
+                ctx.font = 'bold 48px "Noto Serif SC", serif';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('休息中...', this.width / 2, this.height / 2);
+            }
+            
+            ctx.restore();
+        }
     }
     
     // --- 新增：绘制血滴粒子 ---
@@ -2454,17 +3100,21 @@ class Game {
             
             // 只绘制在屏幕内的粒子
             if (x > -50 && x < this.canvas.width + 50 && y > -50 && y < this.canvas.height + 50) {
-                ctx.globalAlpha = alpha;
-                ctx.fillStyle = '#8b0000'; // 深红色
+                ctx.globalAlpha = alpha * 1.2; // 增强可见度
+                if (ctx.globalAlpha > 1) ctx.globalAlpha = 1;
+                ctx.fillStyle = '#cc0000'; // 更亮的红色（增强可见度）
+                ctx.strokeStyle = '#8b0000'; // 深红色边框
+                ctx.lineWidth = 1; // 添加边框
                 ctx.beginPath();
                 ctx.arc(x, y, p.size, 0, Math.PI * 2);
                 ctx.fill();
+                ctx.stroke();
                 
-                // 添加一些随机的小血滴
-                if (Math.random() > 0.7) {
-                    ctx.fillStyle = '#cc0000'; // 亮红色
+                // 添加一些随机的小血滴（更明显）
+                if (Math.random() > 0.6) { // 增加出现频率
+                    ctx.fillStyle = '#ff0000'; // 更亮的红色
                     ctx.beginPath();
-                    ctx.arc(x + (Math.random() - 0.5) * 5, y + (Math.random() - 0.5) * 5, p.size * 0.5, 0, Math.PI * 2);
+                    ctx.arc(x + (Math.random() - 0.5) * 5, y + (Math.random() - 0.5) * 5, p.size * 0.6, 0, Math.PI * 2);
                     ctx.fill();
                 }
             }
@@ -2486,28 +3136,180 @@ class Game {
             
             // 只绘制在屏幕内的粒子
             if (x > -50 && x < this.canvas.width + 50 && y > -50 && y < this.canvas.height + 50) {
-                ctx.globalAlpha = alpha;
+                ctx.globalAlpha = alpha * 1.3; // 增强可见度
+                if (ctx.globalAlpha > 1) ctx.globalAlpha = 1;
                 
-                // 绘制风粒子（使用半透明的白色/灰色，类似风的效果）
+                // 绘制风粒子（使用更亮的白色/蓝色，增强可见度）
                 const gradient = ctx.createRadialGradient(x, y, 0, x, y, p.size);
-                gradient.addColorStop(0, `rgba(200, 220, 255, ${alpha})`);
-                gradient.addColorStop(0.5, `rgba(180, 200, 240, ${alpha * 0.5})`);
-                gradient.addColorStop(1, `rgba(160, 180, 220, 0)`);
+                gradient.addColorStop(0, `rgba(220, 240, 255, ${alpha})`);
+                gradient.addColorStop(0.5, `rgba(200, 220, 250, ${alpha * 0.7})`);
+                gradient.addColorStop(1, `rgba(180, 200, 240, 0)`);
                 
                 ctx.fillStyle = gradient;
                 ctx.beginPath();
                 ctx.arc(x, y, p.size, 0, Math.PI * 2);
                 ctx.fill();
                 
-                // 添加一些线条效果，模拟风的流动
-                if (Math.random() > 0.7) {
-                    ctx.strokeStyle = `rgba(200, 220, 255, ${alpha * 0.5})`;
-                    ctx.lineWidth = 1;
+                // 添加一些线条效果，模拟风的流动（更明显）
+                if (Math.random() > 0.5) { // 增加出现频率
+                    ctx.strokeStyle = `rgba(220, 240, 255, ${alpha * 0.8})`;
+                    ctx.lineWidth = 1.5; // 增加线条宽度
                     ctx.beginPath();
                     ctx.moveTo(x, y);
                     ctx.lineTo(x - p.vx * 2, y - p.vy * 2);
                     ctx.stroke();
                 }
+            }
+        });
+        
+        ctx.globalAlpha = 1;
+        ctx.restore();
+    }
+    
+    // --- 新增：绘制木屑粒子 ---
+    drawWoodChipParticles(cam) {
+        const ctx = this.ctx;
+        ctx.save();
+        
+        this.woodChipParticles.forEach(p => {
+            const alpha = p.life / p.maxLife;
+            const x = p.x - cam.x;
+            const y = p.y - cam.y;
+            
+            // 只绘制在屏幕内的粒子
+            if (x > -50 && x < this.canvas.width + 50 && y > -50 && y < this.canvas.height + 50) {
+                ctx.globalAlpha = alpha * 1.2; // 增强可见度
+                if (ctx.globalAlpha > 1) ctx.globalAlpha = 1;
+                ctx.fillStyle = '#A0522D'; // 更亮的棕色（增强可见度）
+                ctx.strokeStyle = '#654321'; // 深棕色边框
+                ctx.lineWidth = 1.5; // 增加边框宽度
+                
+                // 绘制旋转的木屑（小矩形）
+                ctx.save();
+                ctx.translate(x, y);
+                ctx.rotate(p.rotation);
+                ctx.fillRect(-p.size / 2, -p.size / 3, p.size, p.size * 0.6);
+                ctx.strokeRect(-p.size / 2, -p.size / 3, p.size, p.size * 0.6);
+                ctx.restore();
+            }
+        });
+        
+        ctx.globalAlpha = 1;
+        ctx.restore();
+    }
+    
+    // --- 新增：绘制尘土粒子 ---
+    drawDustParticles(cam) {
+        const ctx = this.ctx;
+        ctx.save();
+        
+        this.dustParticles.forEach(p => {
+            const alpha = (p.life / p.maxLife) * p.alpha;
+            const x = p.x - cam.x;
+            const y = p.y - cam.y;
+            
+            // 只绘制在屏幕内的粒子
+            if (x > -50 && x < this.canvas.width + 50 && y > -50 && y < this.canvas.height + 50) {
+                ctx.globalAlpha = alpha * 1.3; // 增强可见度
+                if (ctx.globalAlpha > 1) ctx.globalAlpha = 1;
+                
+                // 绘制尘土粒子（使用更亮的棕色/灰色，增强可见度）
+                const gradient = ctx.createRadialGradient(x, y, 0, x, y, p.size);
+                gradient.addColorStop(0, `rgba(160, 150, 130, ${alpha})`);
+                gradient.addColorStop(0.5, `rgba(180, 170, 150, ${alpha * 0.7})`);
+                gradient.addColorStop(1, `rgba(200, 190, 170, 0)`);
+                
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(x, y, p.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        });
+        
+        ctx.globalAlpha = 1;
+        ctx.restore();
+    }
+    
+    // --- 新增：绘制建造完成粒子 ---
+    drawBuildParticles(cam) {
+        const ctx = this.ctx;
+        ctx.save();
+        
+        this.buildParticles.forEach(p => {
+            const alpha = (p.life / p.maxLife) * p.alpha;
+            const x = p.x - cam.x;
+            const y = p.y - cam.y;
+            
+            // 只绘制在屏幕内的粒子
+            if (x > -50 && x < this.canvas.width + 50 && y > -50 && y < this.canvas.height + 50) {
+                ctx.globalAlpha = alpha;
+                
+                if (p.type === 'star') {
+                    // 绘制星星粒子（黄色/金色，增强可见度）
+                    ctx.fillStyle = `rgba(255, 255, 100, ${alpha})`; // 更亮的金色
+                    ctx.strokeStyle = `rgba(255, 255, 0, ${alpha})`; // 亮黄色边框
+                    ctx.lineWidth = 2; // 增加边框宽度
+                    
+                    // 绘制五角星
+                    ctx.save();
+                    ctx.translate(x, y);
+                    ctx.scale(p.size / 5, p.size / 5);
+                    ctx.beginPath();
+                    for (let i = 0; i < 5; i++) {
+                        const angle = (i * 4 * Math.PI / 5) - Math.PI / 2;
+                        const px = Math.cos(angle) * 5;
+                        const py = Math.sin(angle) * 5;
+                        if (i === 0) ctx.moveTo(px, py);
+                        else ctx.lineTo(px, py);
+                    }
+                    ctx.closePath();
+                    ctx.fill();
+                    ctx.stroke();
+                    ctx.restore();
+                } else if (p.type === 'smoke') {
+                    // 绘制烟雾粒子（更亮的灰色，增强可见度）
+                    const gradient = ctx.createRadialGradient(x, y, 0, x, y, p.size);
+                    gradient.addColorStop(0, `rgba(140, 140, 140, ${alpha})`);
+                    gradient.addColorStop(0.5, `rgba(160, 160, 160, ${alpha * 0.7})`);
+                    gradient.addColorStop(1, `rgba(180, 180, 180, 0)`);
+                    
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(x, y, p.size, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+        });
+        
+        ctx.globalAlpha = 1;
+        ctx.restore();
+    }
+    
+    // --- 新增：绘制石头碎片粒子 ---
+    drawStoneChipParticles(cam) {
+        const ctx = this.ctx;
+        ctx.save();
+        
+        this.stoneChipParticles.forEach(p => {
+            const alpha = p.life / p.maxLife;
+            const x = p.x - cam.x;
+            const y = p.y - cam.y;
+            
+            // 只绘制在屏幕内的粒子
+            if (x > -50 && x < this.canvas.width + 50 && y > -50 && y < this.canvas.height + 50) {
+                ctx.globalAlpha = alpha * 1.2; // 增强可见度（稍微超过1，但会被限制）
+                if (ctx.globalAlpha > 1) ctx.globalAlpha = 1;
+                ctx.fillStyle = '#696969'; // 深灰色石头
+                ctx.strokeStyle = '#555555'; // 更深的灰色边框
+                ctx.lineWidth = 1; // 增强边框可见度
+                
+                // 绘制旋转的石头碎片（小矩形）
+                ctx.save();
+                ctx.translate(x, y);
+                ctx.rotate(p.rotation);
+                ctx.fillRect(-p.size / 2, -p.size / 3, p.size, p.size * 0.6);
+                ctx.strokeRect(-p.size / 2, -p.size / 3, p.size, p.size * 0.6);
+                ctx.restore();
             }
         });
         
@@ -3015,6 +3817,43 @@ class Game {
     }
     shakeCamera(amount) { this.state.camera.x += (Math.random()-0.5)*amount; this.state.camera.y += (Math.random()-0.5)*amount; }
     
+    // --- 新增：更新生物群系信息显示 ---
+    updateBiomeInfo() {
+        const biomeInfo = {
+            'forest': {
+                icon: '🌲',
+                name: '密林',
+                desc: '树木极多，蜘蛛较多，几乎没有石头'
+            },
+            'rocky': {
+                icon: '🪨',
+                name: '矿区',
+                desc: '石头极多，有狼，几乎没有树木'
+            },
+            'badlands': {
+                icon: '💀',
+                name: '荒地',
+                desc: '资源稀少，怪物较多，危险区域'
+            },
+            'grassland': {
+                icon: '🌿',
+                name: '草原',
+                desc: '资源均衡，适合建家，兔子较多'
+            }
+        };
+        
+        const currentBiome = this.state.currentBiome || 'grassland';
+        const info = biomeInfo[currentBiome] || biomeInfo['grassland'];
+        
+        const biomeIconEl = document.getElementById('biome-icon');
+        const biomeNameEl = document.getElementById('biome-name');
+        const biomeDescEl = document.getElementById('biome-desc');
+        
+        if (biomeIconEl) biomeIconEl.textContent = info.icon;
+        if (biomeNameEl) biomeNameEl.textContent = info.name;
+        if (biomeDescEl) biomeDescEl.textContent = info.desc;
+    }
+    
     updateUI() {
         const p = this.state.player;
         // 更新三维状态条
@@ -3031,6 +3870,9 @@ class Game {
         
         // 更新基地指引UI
         this.updateBaseCompass();
+        
+        // 更新生物群系信息
+        this.updateBiomeInfo();
         
         // --- 修改点 2：详细列出所有天气效果 ---
         const weatherNames = { 'clear': '晴朗', 'rain': '雨天', 'fog': '雾天', 'snow': '雪天', 'thunderstorm': '雷暴' };
@@ -3087,6 +3929,7 @@ class Game {
         document.getElementById('craft-fire').disabled = !(inv.wood >=3 && inv.stone >=2);
         document.getElementById('craft-spear').disabled = !(inv.wood >=1 && inv.gold >=1);
         document.getElementById('craft-bow').disabled = !(inv.wood >=2 && (inv.spiderSilk || 0) >= 3);
+        document.getElementById('craft-rod').disabled = !(inv.twig >=2 && (inv.rope || 0) >= 1);
         
         const towerBtn = document.getElementById('craft-tower'); if (towerBtn) towerBtn.disabled = !(inv.wood >=8 && inv.stone >=6 && inv.gold >=2);
         const bedBtn = document.getElementById('craft-bed'); if (bedBtn) bedBtn.disabled = !(inv.wood >=6 && inv.grass >=8);
@@ -3110,11 +3953,13 @@ class Game {
         const pickaxeDurabilityEl = document.getElementById('tool-pickaxe-durability');
         const spearDurabilityEl = document.getElementById('tool-spear-durability');
         const bowDurabilityEl = document.getElementById('tool-bow-durability');
+        const rodDurabilityEl = document.getElementById('tool-rod-durability');
         const armorDurabilityEl = document.getElementById('tool-armor-durability');
         if (axeDurabilityEl) axeDurabilityEl.innerText = tools.axe ? tools.axeDurability : 0;
         if (pickaxeDurabilityEl) pickaxeDurabilityEl.innerText = tools.pickaxe ? tools.pickaxeDurability : 0;
         if (spearDurabilityEl) spearDurabilityEl.innerText = tools.spear ? tools.spearDurability : 0;
         if (bowDurabilityEl) bowDurabilityEl.innerText = tools.bow ? tools.bowDurability : 0;
+        if (rodDurabilityEl) rodDurabilityEl.innerText = tools.rod ? tools.rodDurability : 0;
         if (armorDurabilityEl) armorDurabilityEl.innerText = tools.armor ? tools.armorDurability : 0;
         
         // 如果背包打开，实时更新背包数据
@@ -3469,6 +4314,5 @@ class Game {
         }
     }
     clearSave() { if(confirm("确定要删除存档并重置吗？")) { localStorage.removeItem('dst_v7_save'); location.reload(); } }
-}
+}const game = new Game();
 
-const game = new Game();

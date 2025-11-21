@@ -36,6 +36,15 @@
                 <div id="weather-effects"></div>
             </div>
             
+            <!-- 生物群系信息 - 时间面板下方 -->
+            <div id="biome-info">
+                <div id="biome-icon" class="biome-icon">🌿</div>
+                <div id="biome-content">
+                    <div id="biome-name">草原</div>
+                    <div id="biome-desc">资源均衡，适合建家</div>
+                </div>
+            </div>
+            
             <!-- 基地指引UI - 右上角 -->
             <div id="base-compass" style="display: none;">
                 <div id="compass-arrow"></div>
@@ -74,6 +83,10 @@
                 <button class="craft-btn" id="craft-bow" onclick="game.craft('bow')">
                     <div class="btn-icon">🏹</div>
                     <div class="btn-info"><b>弓箭</b><span>木材x2, 蜘蛛丝x3 | 耐久: <span id="tool-bow-durability">0</span></span></div>
+                </button>
+                <button class="craft-btn" id="craft-rod" onclick="game.craft('rod')">
+                    <div class="btn-icon">🎣</div>
+                    <div class="btn-info"><b>鱼竿</b><span>树枝x2, 绳索x1 | 耐久: <span id="tool-rod-durability">0</span></span></div>
                 </button>
                 <button class="craft-btn" id="craft-tower" onclick="game.craft('tower')">
                     <div class="btn-icon game-icon icon-tower"></div>

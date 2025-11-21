@@ -200,6 +200,55 @@ canvas { display: block; }
     box-sizing: border-box;
 }
 
+/* 生物群系信息显示 - 放在屏幕左下角，避免遮挡其他UI */
+#biome-info {
+    position: absolute;
+    bottom: 80px; /* 距离底部80px，避免被控制面板遮挡 */
+    left: 20px;
+    background: rgba(0, 0, 0, 0.75);
+    backdrop-filter: blur(8px);
+    border: 2px solid rgba(255, 255, 255, 0.2);
+    border-radius: 12px;
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    z-index: 50;
+    pointer-events: none;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    min-width: 200px;
+    transition: all 0.3s ease;
+}
+
+#biome-icon {
+    font-size: 28px;
+    flex-shrink: 0;
+    filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.8));
+}
+
+#biome-content {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+}
+
+#biome-name {
+    color: #fff;
+    font-size: 16px;
+    font-weight: bold;
+    text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.9);
+    line-height: 1.2;
+}
+
+#biome-desc {
+    color: #d7c6a3;
+    font-size: 12px;
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.9);
+    line-height: 1.3;
+    opacity: 0.9;
+}
+
 /* 制作面板 - 左侧显示 */
 #crafting-panel { 
     position: absolute !important;
