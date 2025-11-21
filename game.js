@@ -46,13 +46,24 @@ class Game {
             player: {
                 x: 0, y: 0, // 从原点开始，无限世界
                 health: 100, hunger: 100, sanity: 100,
-                // 新增 gold, pinecone, spiderSilk
-                inventory: { twig:0, flint:0, wood:0, stone:0, grass:0, berry:0, meat:0, bigmeat:0, gold:0, pinecone:0, rottenmeat:0, spiderSilk:0 },
+                // 新增 gold, pinecone, spiderSilk, 二级材料
+                inventory: { 
+                    twig:0, flint:0, wood:0, stone:0, grass:0, berry:0, meat:0, bigmeat:0, gold:0, pinecone:0, rottenmeat:0, spiderSilk:0,
+                    // 新增物品
+                    arrow: 0,       // 箭矢 (消耗品)
+                    rope: 0,        // 绳索 (压缩材料)
+                    fat: 0,         // 羊油 (稀有掉落)
+                    wool: 0,        // 羊毛 (稀有掉落)
+                    fabric: 0       // 编织布 (高级材料)
+                },
                 tools: { 
                     axe: false, 
                     pickaxe: false, 
                     spear: false,
                     bow: false,  // 新增：弓箭
+                    // 新增护甲状态
+                    armor: false,       
+                    armorDurability: 0,
                     axeDurability: 0,  // 工具耐久度
                     pickaxeDurability: 0,
                     spearDurability: 0,
@@ -300,13 +311,20 @@ class Game {
         }
     }
     
-    // --- 新增：弓箭射击方法 ---
+    // --- 新增：弓箭射击方法（改版：需要弹药）---
     shootBow(targetX, targetY) {
         const p = this.state.player;
         const tools = p.tools;
+        const inv = p.inventory;
         
         if (!tools.bow || tools.bowDurability <= 0) {
             this.log("没有弓箭或弓箭已损坏！");
+            return;
+        }
+        
+        // 1. 检查弹药
+        if ((inv.arrow || 0) <= 0) {
+            this.log("没有箭矢了！需要制作 (树枝+燧石)", true);
             return;
         }
         
@@ -321,20 +339,24 @@ class Game {
         
         // 计算射击角度
         const angle = Math.atan2(targetY - p.y, targetX - p.x);
-        const projectileSpeed = 15; // 箭矢速度
+        const projectileSpeed = 12; // 速度稍降（从15降到12）
         
-        // 创建箭矢实体
+        // 2. 消耗弹药
+        inv.arrow--; 
+        this.renderInventory();
+        
+        // 创建箭矢实体（削弱版）
         const arrow = {
             type: 'arrow',
             x: p.x,
             y: p.y,
             vx: Math.cos(angle) * projectileSpeed,
             vy: Math.sin(angle) * projectileSpeed,
-            ttl: 180, // 箭矢持续时间（3秒）
+            ttl: 120, // 射程缩短 (2秒，从180降到120)
             maxRange: maxRange, // 最大射程
             startX: p.x, // 起始位置
             startY: p.y,
-            damage: 25, // 弓箭伤害
+            damage: 18, // 伤害降低 (从25降到18)
             id: Math.random().toString(36).slice(2),
             life: 1,
             maxLife: 1,
@@ -454,7 +476,8 @@ class Game {
             stick: 5,
             rabbit: 1,
             spider: 0.8, // 新增：每个区块0.8只蜘蛛（平均每个区块不到1只）
-            wolf: 0.5 // 每个区块0.5只狼（平均每两个区块一只）
+            wolf: 0.5, // 每个区块0.5只狼（平均每两个区块一只）
+            sheep: 0.6 // 每个区块约0.6只绵羊
         };
         
         // 在区块内生成资源
@@ -533,11 +556,11 @@ class Game {
         
         // 定义占用的格子大小（树木占2x2格）
         const gridSize = {
-            'tree': { width: 2, height: 2 },
-            'tower': { width: 2, height: 2 }, // 防御塔也占2x2
+            'tree': { width: 2, height: 3 },
+            'tower': { width: 2, height: 3 }, // 防御塔也占2x2
             'campfire': { width: 1, height: 1 },
-            'bed': { width: 1, height: 1 },
-            'beacon': { width: 1, height: 1 }
+            'bed': { width: 2, height: 2 },
+            'beacon': { width: 2, height: 3 } // 灯塔占2x2格
         };
         
         const size = gridSize[type] || { width: 1, height: 1 };
@@ -613,6 +636,7 @@ class Game {
         if(type === 'nightling') hp = 60;
         if(type === 'tower') hp = 350;
         if(type === 'spider') hp = 20; // 蜘蛛血量：两击死亡（工具10伤害×2，弓箭25伤害只需1击，长矛30伤害只需1击）
+        if(type === 'sheep') hp = 50;
 
         this.state.entities.push({
             type: type, x: x, y: y, 
@@ -838,7 +862,7 @@ class Game {
 
             // 1.5秒后必被攻击 (90帧)
             if (this.state.darknessTimer > 90) {
-                p.health -= 10; // 巨额伤害
+                this.takeDamage(10); // 巨额伤害
                 this.log("查理攻击了你！", true);
                 this.shakeCamera(30);
                 this.state.darknessTimer = 0; // 重置，如果不生火会继续挨打
@@ -892,7 +916,25 @@ class Game {
         // 实体更新
         this.state.entities.forEach((e, idx) => {
             if(e.type === 'campfire') {
-                e.life -= 0.025; // 减少耐久度衰减，让火烧得更久
+                // 如果有保护装置(isProtected)，检查保护时间
+                if (e.isProtected) {
+                    // 初始化保护时间计时器（如果还没有）
+                    if (e.protectionTimer === undefined) {
+                        e.protectionTimer = 1800; // 30秒保护时间（1800帧）
+                    }
+                    
+                    // 在保护时间内不掉耐久
+                    if (e.protectionTimer > 0) {
+                        e.protectionTimer--;
+                    } else {
+                        // 保护时间结束后，燃烧速度减半
+                        e.life -= 0.012;
+                    }
+                } else {
+                    // 没有保护装置，正常燃烧
+                    e.life -= 0.025;
+                }
+                
                 if(e.life <= 0) { 
                     const grid = this.worldToGrid(e.x, e.y);
                     this.freeGrid(grid.gx, grid.gy);
@@ -900,14 +942,39 @@ class Game {
                     this.log("火灭了！", true); 
                 }
             }
+            else if (e.type === 'sheep') {
+                const dist = Math.hypot(p.x - e.x, p.y - e.y);
+                if (dist < 120) {
+                    // 玩家靠近时逃跑
+                    const angle = Math.atan2(e.y - p.y, e.x - p.x);
+                    e.x += Math.cos(angle) * 1.5; 
+                    e.y += Math.sin(angle) * 1.5;
+                    e.dir = Math.cos(angle)>0?1:-1;
+                } else {
+                    // 闲逛
+                    if(Math.random() < 0.01) { 
+                        e.vx=(Math.random()-0.5) * 0.5; 
+                        e.vy=(Math.random()-0.5) * 0.5; 
+                        e.dir=e.vx>0?1:-1; 
+                    }
+                    if(e.vx) { e.x+=e.vx; e.y+=e.vy; if(Math.random() < 0.02) e.vx=0; }
+                }
+            }
             else if (e.type === 'sapling') {
                 // 树苗成长逻辑
                 e.growthTimer++;
                 if(e.growthTimer > 1200) { // 约20秒长成
-                    const grid = this.worldToGrid(e.x, e.y);
-                    this.state.entities.splice(idx, 1);
-                    // 不需要重新占用网格，因为树苗和树都占用同一格
-                    this.spawnEntity('tree', e.x, e.y); // 原地变成树
+                    // 先尝试生成树，如果成功再删除树苗
+                    const success = this.spawnEntity('tree', e.x, e.y);
+                    if (success) {
+                        // 生成成功，删除树苗
+                        const grid = this.worldToGrid(e.x, e.y);
+                        this.freeGrid(grid.gx, grid.gy); // 释放树苗占用的网格
+                        this.state.entities.splice(idx, 1);
+                    } else {
+                        // 生成失败（可能因为网格占用），保持当前状态，每帧都会尝试
+                        // 不重置计时器，让它继续尝试，直到成功或周围空间被清理
+                    }
                 }
             }
             else if (e.type === 'rabbit') {
@@ -1010,8 +1077,7 @@ class Game {
                     if (dist < 50) {
                         e.attackTimer++;
                         if (e.attackTimer > 40) { // 攻速
-                            p.health -= 15; // 伤害
-                            this.shakeCamera(5); 
+                            this.takeDamage(15); // 伤害
                             this.log("被狼咬伤！", true);
                             e.attackTimer = 0; 
                         }
@@ -1042,7 +1108,7 @@ class Game {
                 e.x += e.vx; e.y += e.vy; e.dir = Math.cos(angle)>0?1:-1;
                 if (dist < 55) {
                     e.attackTimer++;
-                    if (e.attackTimer > 50) { p.health -= 8; this.shakeCamera(6); e.attackTimer = 0; }
+                    if (e.attackTimer > 50) { this.takeDamage(8); e.attackTimer = 0; }
                 }
                 if (this.getCycle() !== 'night') { this.state.entities.splice(idx, 1); }
             }
@@ -1055,7 +1121,7 @@ class Game {
                 e.x += e.vx; e.y += e.vy; e.dir = Math.cos(angle)>0?1:-1;
                 if (dist < 60) {
                     e.attackTimer++;
-                    if (e.attackTimer > 60) { p.health -= 25; this.log("狼王撕咬！", true); this.shakeCamera(10); e.attackTimer = 0; }  // 攻击力从15增加到25
+                    if (e.attackTimer > 60) { this.takeDamage(25); this.log("狼王撕咬！", true); e.attackTimer = 0; }  // 攻击力从15增加到25
                 }
                 if (this.getCycle() !== 'night') { this.state.entities.splice(idx, 1); this.log("狼王消失了。"); }
             }
@@ -1120,7 +1186,7 @@ class Game {
                     return; 
                 }
                 e.x += e.vx; e.y += e.vy;
-                // 检查是否击中任何可攻击的实体（包括蜘蛛、兔子、狼等）
+                // 检查是否击中任何可攻击的实体（包括蜘蛛、兔子、狼、绵羊等）
                 const hitIdx = this.state.entities.findIndex(t => {
                     if (t === e) return false; // 不击中自己
                     const dist = Math.hypot(t.x - e.x, t.y - e.y);
@@ -1129,7 +1195,8 @@ class Game {
                         t.type === 'boss_wolf' || 
                         t.type === 'wolf' || // 修复：弓箭可以攻击所有狼，不管是否被激怒
                         t.type === 'spider' ||
-                        t.type === 'rabbit'
+                        t.type === 'rabbit' ||
+                        t.type === 'sheep' // 修复：弓箭可以攻击绵羊
                     );
                 });
                 if (hitIdx >= 0) {
@@ -1188,6 +1255,15 @@ class Game {
                             this.state.achievements.totalMeat++;
                             sanityLoss = 5; // 弓箭击杀兔子理智下降较少
                             this.log("弓箭击杀兔子：获得小肉x1");
+                        } else if (t.type === 'sheep') {
+                            // 箭矢击中绵羊的处理
+                            const inv = this.state.player.inventory;
+                            this.state.entities.splice(hitIdx,1);
+                            inv.meat += 2; 
+                            inv.fat = (inv.fat || 0) + 1; // 必掉羊油
+                            inv.wool = (inv.wool || 0) + 2; // 必掉羊毛
+                            sanityLoss = 8; // 弓箭击杀绵羊理智下降
+                            this.log("弓箭击杀绵羊：获得肉x2, 羊油x1, 羊毛x2");
                         }
                         
                         if (isPlayerArrow && sanityLoss > 0) {
@@ -1350,6 +1426,26 @@ class Game {
     }
 
     // interact() 方法已删除，改为dash功能
+
+    // 新增：受伤处理方法（支持护甲减伤）
+    takeDamage(amount) {
+        const p = this.state.player;
+        let finalDamage = amount;
+        
+        // 护甲减伤逻辑
+        if (p.tools.armor && p.tools.armorDurability > 0) {
+            finalDamage = Math.floor(amount * 0.6); // 减伤40%
+            p.tools.armorDurability -= 1; // 消耗耐久
+            
+            if (p.tools.armorDurability <= 0) {
+                p.tools.armor = false;
+                this.log("编织护甲破碎了！", true);
+            }
+        }
+        
+        p.health -= finalDamage;
+        this.shakeCamera(5);
+    }
 
     gather(entity, index) {
         const p = this.state.player;
@@ -1551,6 +1647,31 @@ class Game {
             this.state.achievements.totalMeat++;
             this.checkAchievements();
             this.log(toolUsed === 'bow' ? "射杀兔子 (理智 -5)" : "猎杀兔子 (理智 -" + sanityLoss + ")");
+            return;
+        }
+        
+        // --- 新增：绵羊 (Sheep) 战斗逻辑 ---
+        if (entity.type === 'sheep') {
+            entity.life -= damage;
+            this.createBloodEffect(entity.x, entity.y);
+            // 击退
+            const angle = Math.atan2(entity.y - p.y, entity.x - p.x);
+            entity.x += Math.cos(angle) * 12; entity.y += Math.sin(angle) * 12;
+            if (entity.life <= 0) {
+                this.state.entities.splice(index, 1);
+                inv.meat += 2; 
+                inv.fat = (inv.fat || 0) + 1; // 必掉羊油
+                inv.wool = (inv.wool || 0) + 2; // 必掉羊毛
+                // 击杀绵羊扣理智值
+                let sanityLoss = 10; // 默认徒手或工具
+                if (toolUsed === 'spear') {
+                    sanityLoss = 8; // 长矛稍低
+                } else if (toolUsed === 'bow') {
+                    sanityLoss = 8; // 弓箭（已在箭矢击中逻辑中处理）
+                }
+                p.sanity = Math.max(0, p.sanity - sanityLoss);
+                this.log(toolUsed === 'bow' ? "击杀绵羊：获得肉x2, 羊油x1, 羊毛x2 (理智 -8)" : "击杀绵羊：获得肉x2, 羊油x1, 羊毛x2 (理智 -" + sanityLoss + ")");
+            }
             return;
         }
         
@@ -1825,6 +1946,69 @@ class Game {
                 this.log("材料不足: 石头x10, 金块x5");
             }
         }
+        // 1. 箭矢 (弹药)
+        else if (item === 'arrow') {
+            if (inv.twig >= 1 && inv.flint >= 1) {
+                inv.twig -= 1; inv.flint -= 1;
+                inv.arrow = (inv.arrow || 0) + 4; // 一次造4支
+                this.log("制作: 箭矢 x4");
+            } else { 
+                this.log("材料不足: 树枝x1, 燧石x1"); 
+            }
+        }
+        // 2. 绳索 (消耗大量干草)
+        else if (item === 'rope') {
+            if (inv.grass >= 6) {
+                inv.grass -= 6;
+                inv.rope = (inv.rope || 0) + 1;
+                this.log("制作: 绳索 (消耗6干草)");
+            } else { 
+                this.log("材料不足: 干草x6"); 
+            }
+        }
+        // 3. 编织布 (高难度二级材料)
+        else if (item === 'fabric') {
+            if ((inv.rope||0) >= 2 && (inv.wool||0) >= 2) {
+                inv.rope -= 2; inv.wool -= 2;
+                inv.fabric = (inv.fabric || 0) + 1;
+                this.log("制作: 编织布");
+            } else { 
+                this.log("材料不足: 绳索x2, 羊毛x2"); 
+            }
+        }
+        // 4. 营火挡风板 (功能建筑)
+        else if (item === 'windshield') {
+            if ((inv.fabric||0) >= 1 && (inv.fat||0) >= 1 && inv.stone >= 2) {
+                const p = this.state.player;
+                const nearbyCampfire = this.state.entities.find(e => e.type === 'campfire' && Math.hypot(e.x - p.x, e.y - p.y) < 100);
+                if (nearbyCampfire) {
+                    if (!nearbyCampfire.isProtected) {
+                        inv.fabric -= 1; inv.fat -= 1; inv.stone -= 2;
+                        nearbyCampfire.isProtected = true;
+                        nearbyCampfire.protectionTimer = 1800; // 30秒保护时间
+                        nearbyCampfire.life = Math.min(100, nearbyCampfire.life + 20); 
+                        this.log("营火升级成功！30秒内不会掉耐久，之后燃烧速度减半。");
+                    } else { 
+                        this.log("该营火已有挡风板！"); 
+                    }
+                } else { 
+                    this.log("请靠近营火后制作！"); 
+                }
+            } else { 
+                this.log("材料不足: 编织布x1, 羊油x1, 石头x2"); 
+            }
+        }
+        // 5. 编织护甲 (装备)
+        else if (item === 'armor') {
+            if ((inv.fabric||0) >= 3 && (inv.fat||0) >= 1) {
+                inv.fabric -= 3; inv.fat -= 1;
+                tools.armor = true;
+                tools.armorDurability = 150;
+                this.log("制作: 编织护甲 (减伤40%)");
+            } else { 
+                this.log("材料不足: 编织布x3, 羊油x1"); 
+            }
+        }
         this.renderInventory(); this.updateUI();
     }
 
@@ -2017,6 +2201,17 @@ class Game {
                 }
                 ctx.fillStyle='#3e2723'; ctx.fillRect(-15,15,30,6);
                 ctx.fillStyle='black'; ctx.fillRect(-20,-50,40,6); ctx.fillStyle=e.life>50?'#2ecc71':(e.life>20?'#f1c40f':'#e74c3c'); ctx.fillRect(-19,-49,38*(e.life/100),4);
+                // 绘制营火保护罩
+                if (e.isProtected) {
+                    ctx.strokeStyle = '#7f8c8d';
+                    ctx.lineWidth = 3;
+                    ctx.beginPath(); ctx.arc(0, 10, 25, 0, Math.PI*2); ctx.stroke();
+                }
+            }
+            else if(e.type === 'sheep') {
+                ctx.scale(e.dir, 1);
+                ctx.font = "40px Segoe UI Emoji";
+                ctx.fillText("🐑", 0, 0);
             }
             else if(e.type === 'tower') {
                 const img = this.images['tower'];
@@ -2048,31 +2243,34 @@ class Game {
                 const pulse = Math.sin(Date.now() / 250) * 0.4 + 0.6; // 更强的脉冲
                 const lightIntensity = 0.7 * pulse; // 更高的强度
                 
-                // 多层光柱效果 - 更激进
-                // 外层光柱 - 最大范围
-                const outerGrad = ctx.createRadialGradient(0, -40, 0, 0, -40, 350);
+                // 多层光柱效果 - 增强亮度范围
+                // 外层光柱 - 最大范围（从350增加到550）
+                const outerRange = 550;
+                const outerGrad = ctx.createRadialGradient(0, -40, 0, 0, -40, outerRange);
                 outerGrad.addColorStop(0, `rgba(255, 255, 255, ${0.4 * lightIntensity})`);
                 outerGrad.addColorStop(0.2, `rgba(255, 255, 200, ${0.3 * lightIntensity})`);
                 outerGrad.addColorStop(0.5, `rgba(255, 255, 150, ${0.2 * lightIntensity})`);
                 outerGrad.addColorStop(1, 'rgba(255, 255, 100, 0)');
                 ctx.fillStyle = outerGrad;
-                ctx.fillRect(-350, -390, 700, 700);
+                ctx.fillRect(-outerRange, -outerRange - 40, outerRange * 2, outerRange * 2);
                 
-                // 中层光柱 - 中等强度
-                const midGrad = ctx.createRadialGradient(0, -40, 0, 0, -40, 250);
+                // 中层光柱 - 中等强度（从250增加到400）
+                const midRange = 400;
+                const midGrad = ctx.createRadialGradient(0, -40, 0, 0, -40, midRange);
                 midGrad.addColorStop(0, `rgba(255, 255, 180, ${0.6 * lightIntensity})`);
                 midGrad.addColorStop(0.3, `rgba(255, 255, 160, ${0.4 * lightIntensity})`);
                 midGrad.addColorStop(1, 'rgba(255, 255, 120, 0)');
                 ctx.fillStyle = midGrad;
-                ctx.fillRect(-250, -290, 500, 500);
+                ctx.fillRect(-midRange, -midRange - 40, midRange * 2, midRange * 2);
                 
-                // 内层光柱 - 最亮核心
-                const innerGrad = ctx.createRadialGradient(0, -40, 0, 0, -40, 150);
+                // 内层光柱 - 最亮核心（从150增加到250）
+                const innerRange = 250;
+                const innerGrad = ctx.createRadialGradient(0, -40, 0, 0, -40, innerRange);
                 innerGrad.addColorStop(0, `rgba(255, 255, 200, ${0.8 * lightIntensity})`);
                 innerGrad.addColorStop(0.5, `rgba(255, 255, 180, ${0.5 * lightIntensity})`);
                 innerGrad.addColorStop(1, 'rgba(255, 255, 150, 0)');
                 ctx.fillStyle = innerGrad;
-                ctx.fillRect(-150, -190, 300, 300);
+                ctx.fillRect(-innerRange, -innerRange - 40, innerRange * 2, innerRange * 2);
                 
                 // 绘制灯塔图片
                 const img = this.images['beacon'];
@@ -2610,8 +2808,8 @@ class Game {
                     lCtx.fill();
                 }
                 else if(e.type === 'beacon') {
-                    // 灯塔强力穿透
-                    const beaconRange = 350;
+                    // 灯塔强力穿透 - 增强亮度范围
+                    const beaconRange = 550; // 从350增加到550
                     const beaconG = lCtx.createRadialGradient(e.x-cam.x, e.y-cam.y, 40, e.x-cam.x, e.y-cam.y, beaconRange);
                     beaconG.addColorStop(0, 'rgba(0,0,0,1)');
                     beaconG.addColorStop(1, 'rgba(0,0,0,0)');
@@ -2733,10 +2931,20 @@ class Game {
         
         switch (weather.type) {
             case 'rain':
-                // 雨水会熄灭营火，大幅加快熄灭速度
+                // 雨水会熄灭营火，大幅加快熄灭速度（但挡风板可以保护）
                 this.state.entities.forEach(e => {
                     if (e.type === 'campfire') {
-                        e.life = Math.max(0, e.life - (0.04 + intensity * 0.03)); // 从0.02增强到0.04-0.07
+                        // 检查挡风板保护
+                        if (e.isProtected && e.protectionTimer !== undefined && e.protectionTimer > 0) {
+                            // 在保护时间内，不受雨水影响
+                            // 不扣血
+                        } else if (e.isProtected) {
+                            // 有挡风板但保护时间已过，受到较少影响（减半）
+                            e.life = Math.max(0, e.life - (0.02 + intensity * 0.015)); // 减半伤害
+                        } else {
+                            // 没有挡风板，正常受到雨水影响
+                            e.life = Math.max(0, e.life - (0.04 + intensity * 0.03)); // 从0.02增强到0.04-0.07
+                        }
                     }
                 });
                 // 下雨降低理智（降低下降速度）
@@ -2763,10 +2971,20 @@ class Game {
             case 'thunderstorm':
                 // 雷暴天气极度危险，大幅降低理智
                 p.sanity = Math.max(0, p.sanity - (0.06 + intensity * 0.04)); // 从0.03增强到0.06-0.10
-                // 雷暴会极快熄灭营火
+                // 雷暴会极快熄灭营火（但挡风板可以保护）
                 this.state.entities.forEach(e => {
                     if (e.type === 'campfire') {
-                        e.life = Math.max(0, e.life - (0.08 + intensity * 0.05)); // 从0.05增强到0.08-0.13
+                        // 检查挡风板保护
+                        if (e.isProtected && e.protectionTimer !== undefined && e.protectionTimer > 0) {
+                            // 在保护时间内，不受雷暴影响
+                            // 不扣血
+                        } else if (e.isProtected) {
+                            // 有挡风板但保护时间已过，受到较少影响（减半）
+                            e.life = Math.max(0, e.life - (0.04 + intensity * 0.025)); // 减半伤害
+                        } else {
+                            // 没有挡风板，正常受到雷暴影响
+                            e.life = Math.max(0, e.life - (0.08 + intensity * 0.05)); // 从0.05增强到0.08-0.13
+                        }
                     }
                 });
                 // 偶尔有闪电效果
@@ -2782,8 +3000,8 @@ class Game {
         const nearCampfire = this.state.entities.some(e=>e.type==='campfire'&&e.life>0&&Math.hypot(e.x-p.x,e.y-p.y)<200); // 200像素范围内才算靠近营火
         // 检查防御塔照明（150像素范围，比照明范围小）
         const nearTower = this.state.entities.some(e=>e.type==='tower'&&Math.hypot(e.x-p.x,e.y-p.y)<150);
-        // 检查灯塔照明（300像素范围，比照明范围小）
-        const nearBeacon = this.state.entities.some(e=>e.type==='beacon'&&Math.hypot(e.x-p.x,e.y-p.y)<300);
+        // 检查灯塔照明（450像素范围，比照明范围小）
+        const nearBeacon = this.state.entities.some(e=>e.type==='beacon'&&Math.hypot(e.x-p.x,e.y-p.y)<450);
         return nearCampfire || nearTower || nearBeacon;
     }
     
@@ -2874,16 +3092,30 @@ class Game {
         const bedBtn = document.getElementById('craft-bed'); if (bedBtn) bedBtn.disabled = !(inv.wood >=6 && inv.grass >=8);
         const beaconBtn = document.getElementById('craft-beacon'); if (beaconBtn) beaconBtn.disabled = !(inv.stone >=10 && inv.gold >=5);
         
+        // 更新新按钮的禁用状态
+        const ropeBtn = document.getElementById('craft-rope');
+        if(ropeBtn) ropeBtn.disabled = !(inv.grass >= 6);
+        const fabricBtn = document.getElementById('craft-fabric');
+        if(fabricBtn) fabricBtn.disabled = !((inv.rope||0) >= 2 && (inv.wool||0) >= 2);
+        const wsBtn = document.getElementById('craft-windshield');
+        if(wsBtn) wsBtn.disabled = !((inv.fabric||0) >= 1 && (inv.fat||0) >= 1 && inv.stone >= 2);
+        const armorBtn = document.getElementById('craft-armor');
+        if(armorBtn) armorBtn.disabled = !((inv.fabric||0) >= 3 && (inv.fat||0) >= 1);
+        const arrowBtn = document.getElementById('craft-arrow');
+        if(arrowBtn) arrowBtn.disabled = !(inv.twig >= 1 && inv.flint >= 1);
+        
         // 更新工具耐久度显示
         const tools = p.tools;
         const axeDurabilityEl = document.getElementById('tool-axe-durability');
         const pickaxeDurabilityEl = document.getElementById('tool-pickaxe-durability');
         const spearDurabilityEl = document.getElementById('tool-spear-durability');
         const bowDurabilityEl = document.getElementById('tool-bow-durability');
+        const armorDurabilityEl = document.getElementById('tool-armor-durability');
         if (axeDurabilityEl) axeDurabilityEl.innerText = tools.axe ? tools.axeDurability : 0;
         if (pickaxeDurabilityEl) pickaxeDurabilityEl.innerText = tools.pickaxe ? tools.pickaxeDurability : 0;
         if (spearDurabilityEl) spearDurabilityEl.innerText = tools.spear ? tools.spearDurability : 0;
         if (bowDurabilityEl) bowDurabilityEl.innerText = tools.bow ? tools.bowDurability : 0;
+        if (armorDurabilityEl) armorDurabilityEl.innerText = tools.armor ? tools.armorDurability : 0;
         
         // 如果背包打开，实时更新背包数据
         if (this.ui.inventoryOpen) {
@@ -2983,6 +3215,13 @@ class Game {
         // --- 新增：更新蜘蛛丝数量 ---
         const spiderSilkEl = document.getElementById('inv-spiderSilk');
         if(spiderSilkEl) spiderSilkEl.innerText = inv.spiderSilk || 0;
+        
+        // --- 新增：更新二级材料数量 ---
+        document.getElementById('inv-arrow').innerText = inv.arrow || 0;
+        document.getElementById('inv-rope').innerText = inv.rope || 0;
+        document.getElementById('inv-wool').innerText = inv.wool || 0;
+        document.getElementById('inv-fat').innerText = inv.fat || 0;
+        document.getElementById('inv-fabric').innerText = inv.fabric || 0;
         
         // 更新原有按钮状态
         document.getElementById('eat-berry').disabled = inv.berry <= 0;
