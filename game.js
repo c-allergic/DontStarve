@@ -1163,8 +1163,15 @@ class Game {
 
         if (p.health <= 0) {
             const maxDays = this.state.achievements.maxDays;
-            alert(`你死了。\n存活天数: ${this.state.day} 天\n最长存活记录: ${maxDays} 天`);
-            this.clearSave();
+            const currentDays = this.state.day;
+            // 更新最长存活记录
+            if (currentDays > maxDays) {
+                this.state.achievements.maxDays = currentDays;
+            }
+            // 显示死亡信息（非阻塞，不影响训练）
+            console.log(`你死了。存活天数: ${currentDays} 天，最长存活记录: ${this.state.achievements.maxDays} 天`);
+            // 【重要】不再在这里自动 resetGame，让外部（Python 环境）根据 health<=0 来结束回合并重置
+            // 保持 p.health = 0，方便训练脚本检测到死亡
         }
 
         // 实体更新
@@ -3650,7 +3657,7 @@ class Game {
                     newWeather = 'rain';
                     duration = halfDay + Math.random() * halfDay; // 0.5-1天
                     intensity = 0.5 + Math.random() * 0.5;
-                } else if (rand < 0.35) {
+                } else if (rand < 0.25) {  // 降低雾天概率：从15%降到5%
                     newWeather = 'fog';
                     duration = halfDay + Math.random() * halfDay * 0.8;
                     intensity = 0.3 + Math.random() * 0.4;
@@ -3661,14 +3668,14 @@ class Game {
                     newWeather = 'thunderstorm';
                     duration = halfDay * 0.5 + Math.random() * halfDay * 0.8;
                     intensity = 0.7 + Math.random() * 0.3;
-                } else if (rand < 0.3) {
+                } else if (rand < 0.2) {  // 降低雾天概率：从15%降到5%
                     newWeather = 'fog';
                     duration = halfDay + Math.random() * halfDay * 0.5;
                     intensity = 0.4 + Math.random() * 0.3;
                 }
             } else if (cycle === 'dusk') {
                 const rand = Math.random();
-                if (rand < 0.25) {
+                if (rand < 0.1) {  // 降低雾天概率：从25%降到10%
                     newWeather = 'fog';
                     duration = halfDay * 0.6 + Math.random() * halfDay * 0.8;
                     intensity = 0.3 + Math.random() * 0.3;
@@ -4313,6 +4320,77 @@ class Game {
             this.initWorld(); 
         }
     }
-    clearSave() { if(confirm("确定要删除存档并重置吗？")) { localStorage.removeItem('dst_v7_save'); location.reload(); } }
+    resetGame() {
+        // 重置玩家状态
+        const p = this.state.player;
+        p.x = 0;
+        p.y = 0;
+        p.health = 100;
+        p.hunger = 100;
+        p.sanity = 100;
+        p.isPaused = false;
+        p.isDashing = false;
+        p.dashProgress = 0;
+        p.dashCooldown = 0;
+        p.dir = 1;
+        
+        // 重置背包
+        p.inventory = {
+            twig: 0, flint: 0, wood: 0, stone: 0, grass: 0, berry: 0, 
+            meat: 0, bigmeat: 0, gold: 0, pinecone: 0, rottenmeat: 0, spiderSilk: 0,
+            arrow: 0, rope: 0, fat: 0, wool: 0, fabric: 0
+        };
+        
+        // 重置工具
+        p.tools = {
+            axe: false, pickaxe: false, spear: false, bow: false, rod: false, armor: false,
+            armorDurability: 0, axeDurability: 0, pickaxeDurability: 0,
+            spearDurability: 0, bowDurability: 0, rodDurability: 0
+        };
+        
+        // 重置游戏状态
+        this.state.time = 0;
+        this.state.day = 1;
+        this.state.entities = [];
+        this.state.camera.x = 0;
+        this.state.camera.y = 0;
+        this.state.isBloodMoon = false;
+        this.state.darknessTimer = 0;
+        this.state.baseX = 0;
+        this.state.baseY = 0;
+        this.state.hasBase = false;
+        this.state.chunks = {};
+        this.state.spiderPoisonTimer = 0;
+        this.state.lastKilledByBow = false;
+        this.state.currentBiome = 'grassland';
+        this.state.currentBiomeValue = 0;
+        this.state.isResting = false;
+        this.state.restProgress = 0;
+        this.state.campfireHealTimer = 0;
+        this.state.isFishing = false;
+        this.state.fishingTimer = 0;
+        this.state.fishingTarget = null;
+        this.state.weather = { type: 'clear', duration: 0, intensity: 1.0 };
+        
+        // 重置UI状态
+        this.ui.craftOpen = false;
+        this.ui.inventoryOpen = false;
+        this.ui.achievementsOpen = false;
+        
+        // 清空网格占用
+        this.gridOccupied = new Set();
+        
+        // 重新生成世界
+        this.initWorld();
+        
+        this.log("游戏已重置，重新开始！");
+    }
+    
+    clearSave() { 
+        if(confirm("确定要删除存档并重置吗？")) { 
+            localStorage.removeItem('dst_v7_save'); 
+            this.resetGame();
+        } 
+    }
 }const game = new Game();
 
